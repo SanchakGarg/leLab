@@ -1559,6 +1559,12 @@ def remote_server_status(name: str):
     return _remote_call(remote_ssh.status, name)
 
 
+@app.post("/remote-servers/{name}/install-policy-server", dependencies=REMOTE_GUARD)
+def remote_server_install_policy_server(name: str, request: remote_upload.InstallPolicyServerRequest):
+    """Copy LeLab's standalone policy server script to the server."""
+    return _remote_call(remote_upload.handle_install_policy_server, name, request)
+
+
 @app.post("/remote-upload", dependencies=REMOTE_GUARD)
 def remote_upload_start(request: remote_upload.RemoteUploadRequest):
     """Copy a local dataset to a saved server over SFTP, in the background."""

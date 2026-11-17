@@ -38,6 +38,7 @@ test = [
 
 [project.scripts]
 lelab = "lelab.scripts.lelab:main"
+lelab-policy-server = "lelab.policy_server:main"
 
 [tool.setuptools]
 # Ship only the package-data below: the frontend sources are build inputs, not runtime files.

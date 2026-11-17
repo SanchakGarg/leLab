@@ -57,8 +57,16 @@ class RemoteUploadRequest(BaseModel):
     remote_name: str = ""
 
 
+class InstallPolicyServerRequest(BaseModel):
+    # Folder on the server for the script. Empty: the profile's remote_work_dir, else the home.
+    remote_dir: str = ""
+
+
 class UploadCancelledError(Exception):
     pass
+
+
+POLICY_SERVER_FILE = "lelab_policy_server.py"
 
 
 _lock = threading.Lock()
@@ -150,17 +158,22 @@ def _upload_files(
             progress(done_bytes=transferred - sent)
             sent = transferred
 
-        tmp = remote + ".part"
-        sftp.put(str(local_dir / rel), tmp, callback=on_bytes)
-        try:
-            sftp.posix_rename(tmp, remote)
-        except OSError:
-            # Servers without the posix-rename extension refuse to rename over a file.
-            if _remote_size(sftp, remote) is not None:
-                sftp.remove(remote)
-            sftp.rename(tmp, remote)
+        _put_file(sftp, local_dir / rel, remote, on_bytes)
         progress(done_bytes=size - sent, done_file=True)
     return skipped
+
+
+def _put_file(sftp: paramiko.SFTPClient, local: Path, remote: str, callback=None) -> None:
+    """Write to <remote>.part, then rename it into place, so a complete-looking file is a complete one."""
+    tmp = remote + ".part"
+    sftp.put(str(local), tmp, callback=callback)
+    try:
+        sftp.posix_rename(tmp, remote)
+    except OSError:
+        # Servers without the posix-rename extension refuse to rename over a file.
+        if _remote_size(sftp, remote) is not None:
+            sftp.remove(remote)
+        sftp.rename(tmp, remote)
 
 
 def train_command(remote_root: str, name: str) -> str:
@@ -299,3 +312,28 @@ def cancel_and_wait(timeout: float = 5.0) -> None:
     if thread is not None and thread.is_alive():
         _cancel.set()
         thread.join(timeout)
+
+
+def handle_install_policy_server(name: str, request: InstallPolicyServerRequest) -> dict[str, Any]:
+    """Copy lelab/policy_server.py to the server, where it runs with the Python that trains there."""
+    if config.get_remote_server(name) is None:
+        raise remote_ssh.RemoteServerError(f"No saved server named {name!r}", 404)
+    with remote_ssh.lease(name) as session:
+        sftp = remote_ssh.open_sftp(session)
+        try:
+            remote_dir = resolve_remote_dir(
+                sftp, request.remote_dir or session.profile.get("remote_work_dir", "")
+            )
+            _mkdirs(sftp, remote_dir, set())
+            remote_path = posixpath.join(remote_dir, POLICY_SERVER_FILE)
+            _put_file(sftp, Path(__file__).with_name("policy_server.py"), remote_path)
+        finally:
+            sftp.close()
+    logger.info("Copied the policy server to %s:%s", name, remote_path)
+    return {
+        "remote_path": remote_path,
+        "command": (
+            f"cd {shlex.quote(remote_dir)} && python {POLICY_SERVER_FILE} "
+            "--policy <run folder>/checkpoints/last/pretrained_model --port 5555"
+        ),
+    }
