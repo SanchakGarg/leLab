@@ -24,7 +24,7 @@ import CameraConfiguration, {
 } from "@/components/recording/CameraConfiguration";
 import { useHfAuth } from "@/contexts/HfAuthContext";
 import { RobotRecord } from "@/hooks/useRobots";
-import { AppendTarget } from "@/hooks/useRecording";
+import { AppendTarget, isUnfinished } from "@/hooks/useRecording";
 import { useCameraBindings } from "@/hooks/useCameraBindings";
 import CameraBindings from "./CameraBindings";
 
@@ -40,6 +40,9 @@ interface RecordingModalProps {
   setSingleTask: (value: string) => void;
   numEpisodes: number;
   setNumEpisodes: (value: number) => void;
+  /** The dataset's new total when appending (unused for a new dataset). */
+  totalEpisodes: number;
+  setTotalEpisodes: (value: number) => void;
   episodeTimeS: number;
   setEpisodeTimeS: (value: number) => void;
   resetTimeS: number;
@@ -68,6 +71,8 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
   setSingleTask,
   numEpisodes,
   setNumEpisodes,
+  totalEpisodes,
+  setTotalEpisodes,
   episodeTimeS,
   setEpisodeTimeS,
   resetTimeS,
@@ -84,8 +89,13 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
 }) => {
   const { auth } = useHfAuth();
 
+  const resuming = appendTo !== null && isUnfinished(appendTo);
+  // Episodes this session records when appending.
+  const toAdd = appendTo ? totalEpisodes - appendTo.numEpisodes : numEpisodes;
   const canStart =
-    !!robot && robot.is_clean && (!appendTo || cameraBindings.allBound);
+    !!robot &&
+    robot.is_clean &&
+    (!appendTo || (cameraBindings.allBound && toAdd > 0));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -97,7 +107,11 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
             </div>
           </div>
           <DialogTitle className="text-white text-center text-2xl font-bold">
-            {appendTo ? "Record More Episodes" : "Configure Recording"}
+            {appendTo
+              ? resuming
+                ? "Resume Recording"
+                : "Record More Episodes"
+              : "Configure Recording"}
           </DialogTitle>
         </DialogHeader>
         <div className="space-y-6 py-4">
@@ -106,7 +120,10 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
               <>
                 New episodes are added to{" "}
                 <span className="font-mono text-gray-300">{appendTo.repoId}</span>
-                , which has {appendTo.numEpisodes} so far.
+                , which has{" "}
+                {resuming
+                  ? `${appendTo.numEpisodes} of the ${appendTo.targetEpisodes} episodes planned so far.`
+                  : `${appendTo.numEpisodes} so far.`}
               </>
             ) : (
               "Pick a configured robot and dataset parameters for recording."
@@ -208,18 +225,42 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
                     htmlFor="numEpisodes"
                     className="text-sm font-medium text-gray-300"
                   >
-                    {appendTo ? "Episodes to Add" : "Number of Episodes"}
+                    {appendTo ? "Total Episodes" : "Number of Episodes"}
                   </Label>
-                  <NumberInput
-                    id="numEpisodes"
-                    min="1"
-                    max="100"
-                    value={numEpisodes}
-                    onChange={(v) => {
-                      if (v !== undefined) setNumEpisodes(v);
-                    }}
-                    className="bg-gray-800 border-gray-700 text-white"
-                  />
+                  {appendTo ? (
+                    <>
+                      <NumberInput
+                        id="numEpisodes"
+                        min={appendTo.numEpisodes + 1}
+                        max={appendTo.numEpisodes + 100}
+                        value={totalEpisodes}
+                        onChange={(v) => {
+                          if (v !== undefined) setTotalEpisodes(v);
+                        }}
+                        aria-describedby="numEpisodesHint"
+                        className="bg-gray-800 border-gray-700 text-white"
+                      />
+                      <p
+                        id="numEpisodesHint"
+                        className={`text-xs ${toAdd > 0 ? "text-gray-500" : "text-red-400"}`}
+                      >
+                        {toAdd > 0
+                          ? `${toAdd} more episode${toAdd === 1 ? "" : "s"} will be recorded.`
+                          : `Enter more than the ${appendTo.numEpisodes} the dataset already has.`}
+                      </p>
+                    </>
+                  ) : (
+                    <NumberInput
+                      id="numEpisodes"
+                      min="1"
+                      max="100"
+                      value={numEpisodes}
+                      onChange={(v) => {
+                        if (v !== undefined) setNumEpisodes(v);
+                      }}
+                      className="bg-gray-800 border-gray-700 text-white"
+                    />
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -358,7 +399,7 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
               disabled={!canStart}
               className="w-full sm:w-auto bg-red-500 hover:bg-red-600 text-white px-10 py-6 text-lg transition-all shadow-md shadow-red-500/30 hover:shadow-lg hover:shadow-red-500/40 disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              Start Recording
+              {resuming ? "Resume Recording" : "Start Recording"}
             </Button>
             <Button
               onClick={() => onOpenChange(false)}

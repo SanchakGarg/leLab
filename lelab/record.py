@@ -13,10 +13,12 @@
 # limitations under the License.
 
 import logging
+import numbers
 import re
 import shutil
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from typing import Any
 
@@ -33,7 +35,12 @@ from lerobot.teleoperators.so_leader import SO101LeaderConfig
 from .camera_config import lerobot_camera_settings, validate_camera_rotations
 from .episode_media import UnreadableDatasetError, ensure_episode_index
 from .utils.bus_guard import guard_buses, notable_outages, unguard
-from .utils.config import setup_calibration_files, with_lelab_tag
+from .utils.config import (
+    delete_recording_target,
+    save_recording_target,
+    setup_calibration_files,
+    with_lelab_tag,
+)
 from .utils.devices import follower_lock, safe_disconnect_device
 
 logger = logging.getLogger(__name__)
@@ -53,6 +60,9 @@ recording_start_time = None  # Track when recording started
 session_end_elapsed_seconds = None  # Final session duration after the run ends
 current_episode = 1  # Track current episode number
 saved_episodes = 0  # Track how many episodes have been saved
+# Episodes the dataset already had when this session started (resume), so the
+# page can number episodes across the whole dataset. 0 for a new dataset.
+episode_offset = 0
 current_phase = "preparing"  # Track current phase: "preparing", "recording", "resetting", "completed"
 phase_start_time = None  # Track when current phase started
 # Glitch tolerance on the arms' buses while the devices are up (see utils/bus_guard.py).
@@ -60,6 +70,95 @@ _bus_guards: list = []
 last_recording_info: dict[str, Any] | None = (
     None  # Snapshot of the most recently completed dataset (for /dataset-info)
 )
+
+# Seconds of action/observation history kept for the recording page's graphs.
+SIGNAL_WINDOW_S = 15.0
+_POS_SUFFIX = ".pos"
+
+
+def _joint_positions(values: Any) -> dict[str, float]:
+    """The `<joint>.pos` numbers of an action or observation dict, keyed by
+    joint name. Camera frames and anything non-numeric are left out."""
+    if not isinstance(values, dict):
+        return {}
+    return {
+        key[: -len(_POS_SUFFIX)]: float(v)
+        for key, v in values.items()
+        if isinstance(key, str)
+        and key.endswith(_POS_SUFFIX)
+        and isinstance(v, numbers.Real)
+        and not isinstance(v, bool)
+    }
+
+
+class _SignalRecorder:
+    """Recent joint positions of the action sent and the observation read,
+    for the live graphs on the recording page (`/recording-signals`).
+
+    Every sample gets a sequence number that keeps growing across sessions, so
+    a client asking for samples newer than the last one it saw never misses
+    the start of a new session.
+    """
+
+    STREAMS = ("action", "observation")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._seq = 0
+        self._streams: dict[str, deque] = {s: deque(maxlen=int(30 * SIGNAL_WINDOW_S)) for s in self.STREAMS}
+
+    def reset(self, fps: int = 30) -> None:
+        maxlen = max(1, int(fps * SIGNAL_WINDOW_S))
+        with self._lock:
+            self._streams = {s: deque(maxlen=maxlen) for s in self.STREAMS}
+
+    def add(self, stream: str, values: Any) -> None:
+        joints = _joint_positions(values)
+        if not joints:
+            return
+        with self._lock:
+            self._seq += 1
+            self._streams[stream].append((self._seq, time.time(), joints))
+
+    def since(self, seq: int) -> dict[str, Any]:
+        with self._lock:
+            out: dict[str, Any] = {"seq": self._seq}
+            for name, samples in self._streams.items():
+                out[name] = [{"t": t, "joints": joints} for s, t, joints in samples if s > seq]
+            return out
+
+
+_signals = _SignalRecorder()
+
+
+class _SignalTap:
+    """Wraps one of the processor pipelines LeRobot's `record_loop` calls once
+    per frame: passes the output through unchanged and copies its joint
+    positions to `_signals`. Whatever goes wrong in the copy never reaches the
+    control loop."""
+
+    def __init__(self, inner: Any, stream: str) -> None:
+        self._inner = inner
+        self._stream = stream
+        self._warned = False
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        out = self._inner(*args, **kwargs)
+        try:
+            _signals.add(self._stream, out)
+        except Exception as e:
+            if not self._warned:
+                self._warned = True
+                logger.warning(f"Could not record the {self._stream} for the live graphs: {e}")
+        return out
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def handle_recording_signals(since: int = 0) -> dict[str, Any]:
+    """Joint positions recorded after sequence number `since`, for the graphs."""
+    return _signals.since(since)
 
 
 class RecordingRequest(BaseModel):
@@ -246,6 +345,7 @@ def handle_start_recording(request: RecordingRequest) -> dict[str, Any]:
         session_end_elapsed_seconds, \
         current_episode, \
         saved_episodes, \
+        episode_offset, \
         current_phase, \
         phase_start_time, \
         last_recording_info
@@ -271,9 +371,11 @@ def handle_start_recording(request: RecordingRequest) -> dict[str, Any]:
         session_end_elapsed_seconds = None
         current_episode = 1
         saved_episodes = 0
+        episode_offset = 0
         current_phase = "preparing"
         phase_start_time = None
         last_recording_info = None
+    _signals.reset(request.fps)
 
     try:
         # Sanitize the dataset name so push_to_hub never rejects a finished
@@ -310,6 +412,7 @@ def handle_start_recording(request: RecordingRequest) -> dict[str, Any]:
                 phase_start_time, \
                 current_episode, \
                 saved_episodes, \
+                episode_offset, \
                 last_recording_info
             recording_start_time = time.time()
             current_episode = 1
@@ -375,6 +478,8 @@ def handle_start_recording(request: RecordingRequest) -> dict[str, Any]:
                 phase_start_time = None
                 current_episode = 1
                 saved_episodes = 0
+                episode_offset = 0
+                _signals.reset(request.fps)
                 logger.info("Recording session ended")
 
         recording_thread = threading.Thread(target=recording_worker, name="recording-worker", daemon=True)
@@ -517,6 +622,7 @@ def handle_recording_status() -> dict[str, Any]:
         status["current_episode"] = current_episode
         status["total_episodes"] = recording_config.num_episodes
         status["saved_episodes"] = saved_episodes  # Track completed episodes
+        status["episode_offset"] = episode_offset
         # Names of the cameras the user configured for this session. The frontend
         # renders a live /camera-feed/{name} preview for exactly these — nothing
         # else — so only configured cameras are ever shown.
@@ -725,6 +831,10 @@ def handle_delete_dataset(request: DatasetInfoRequest) -> dict[str, Any]:
 
     if last_recording_info and last_recording_info.get("dataset_repo_id") == repo_id:
         last_recording_info = None
+    try:
+        delete_recording_target(repo_id)
+    except OSError as e:
+        logger.warning(f"Could not remove the recording target of {repo_id}: {e}")
 
     logger.info(f"Deleted dataset directory {target}")
     return {"success": True, "message": f"Deleted {repo_id}"}
@@ -780,6 +890,15 @@ def handle_upload_dataset(request: UploadRequest) -> dict[str, Any]:
         return {"success": False, "message": f"Failed to upload dataset: {str(e)}"}
 
 
+def _remember_target(repo_id: str, target_episodes: int) -> None:
+    """Save the planned episode count; never fails the recording over it."""
+    try:
+        if not save_recording_target(repo_id, target_episodes):
+            logger.warning(f"Not saving a recording target for {repo_id!r}: not an owner/name id")
+    except OSError as e:
+        logger.warning(f"Could not save the recording target of {repo_id}: {e}")
+
+
 def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDataset:
     """
     Implement recording with phase tracking - exactly mirrors original record() function behavior
@@ -798,7 +917,14 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDatase
     from lerobot.utils.feature_utils import hw_to_dataset_features
     from lerobot.utils.utils import log_say
 
-    global current_phase, phase_start_time, current_episode, saved_episodes, current_robot, _bus_guards
+    global \
+        current_phase, \
+        phase_start_time, \
+        current_episode, \
+        saved_episodes, \
+        episode_offset, \
+        current_robot, \
+        _bus_guards
 
     robot = make_robot_from_config(cfg.robot)
     teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
@@ -844,6 +970,11 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDatase
             encoder_queue_maxsize=cfg.dataset.encoder_queue_maxsize,
             encoder_threads=cfg.dataset.encoder_threads,
         )
+
+    # Remember how many episodes the dataset should end up with, before any is
+    # recorded, so a session stopped midway can be resumed up to that count.
+    episode_offset = int(dataset.meta.total_episodes or 0) if cfg.resume else 0
+    _remember_target(cfg.dataset.repo_id, episode_offset + cfg.dataset.num_episodes)
 
     # Bring the devices up in the same order as teleoperation: buses, then
     # calibration, then cameras and motor configuration.
@@ -921,9 +1052,10 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDatase
             "robot": robot,
             "events": web_events,
             "fps": cfg.dataset.fps,
-            "teleop_action_processor": teleop_action_processor,
+            # Tapped so the recording page can graph the action and observation.
+            "teleop_action_processor": _SignalTap(teleop_action_processor, "action"),
             "robot_action_processor": robot_action_processor,
-            "robot_observation_processor": robot_observation_processor,
+            "robot_observation_processor": _SignalTap(robot_observation_processor, "observation"),
             "teleop": teleop,
             "single_task": cfg.dataset.single_task,
             "display_data": cfg.display_data,

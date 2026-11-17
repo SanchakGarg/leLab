@@ -194,3 +194,35 @@ def test_with_lelab_tag_dedupes() -> None:
 
     # Caller-supplied LeLab is not duplicated, and order is preserved.
     assert with_lelab_tag(["robotics", LELAB_TAG, "lerobot"]) == ["robotics", LELAB_TAG, "lerobot"]
+
+
+def test_recording_target_round_trips(tmp_lerobot_home: Path) -> None:
+    from lelab.utils import config as cfg
+
+    assert cfg.load_recording_target("alice/pusht") is None
+    assert cfg.save_recording_target("alice/pusht", 20) is True
+    assert cfg.load_recording_target("alice/pusht") == 20
+    assert (tmp_lerobot_home / "recording_targets" / "alice" / "pusht.json").exists()
+
+    cfg.delete_recording_target("alice/pusht")
+    assert cfg.load_recording_target("alice/pusht") is None
+    cfg.delete_recording_target("alice/pusht")  # already gone: no error
+
+
+@pytest.mark.parametrize("repo_id", ["../escape", "a/../b", "a/b/c", "pusht", "/abs", "a/", "./x"])
+def test_recording_target_rejects_ids_outside_the_folder(tmp_lerobot_home: Path, repo_id: str) -> None:
+    from lelab.utils import config as cfg
+
+    assert cfg.save_recording_target(repo_id, 5) is False
+    assert cfg.load_recording_target(repo_id) is None
+    assert not (tmp_lerobot_home / "recording_targets").exists()
+
+
+def test_recording_target_ignores_a_corrupt_file(tmp_lerobot_home: Path) -> None:
+    from lelab.utils import config as cfg
+
+    path = tmp_lerobot_home / "recording_targets" / "alice" / "pusht.json"
+    path.parent.mkdir(parents=True)
+    for content in ("not json", '{"target_episodes": "20"}', '{"target_episodes": 0}', "[1]"):
+        path.write_text(content)
+        assert cfg.load_recording_target("alice/pusht") is None

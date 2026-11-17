@@ -35,7 +35,7 @@ Run the Python tests with `pytest` (config in [pyproject.toml](pyproject.toml); 
 
 [server.py](lelab/server.py) is a thin FastAPI router. Each feature lives in its own module that owns its global state and exposes `handle_*` functions plus a Pydantic request model:
 
-- [record.py](lelab/record.py): dataset recording around LeRobot's `record_loop`; frontend buttons set the same `events` dict LeRobot's keyboard listener would. The worker is a daemon thread, so the server's shutdown hook calls `stop_recording_and_wait()` to let an active session finalize on Ctrl+C.
+- [record.py](lelab/record.py): dataset recording around LeRobot's `record_loop`; frontend buttons set the same `events` dict LeRobot's keyboard listener would. The worker is a daemon thread, so the server's shutdown hook calls `stop_recording_and_wait()` to let an active session finalize on Ctrl+C. It saves each dataset's planned episode count (`utils/config.py` recording targets) before the first episode, so the dataset browser can offer **Resume** up to it; `num_episodes` in the request stays "episodes this session", and `episode_offset` in the status numbers episodes across the dataset. The `teleop_action_processor` / `robot_observation_processor` passed to LeRobot's `record_loop` are wrapped in `_SignalTap`, which copies each frame's `*.pos` values for `/recording-signals` (the recording page's live Action / Observation graphs) without touching what gets recorded.
 - [teleoperate.py](lelab/teleoperate.py): leader→follower teleoperation loop over LeRobot's SO-101 leader and follower.
 - [replay.py](lelab/replay.py): plays a recorded episode's actions on the follower arm, an in-process take on `lerobot-replay` so the dataset browser can stop it.
 - [calibrate.py](lelab/calibrate.py) — step-by-step web calibration with a `CalibrationManager` singleton and `_step_complete` threading.Event.
@@ -68,6 +68,7 @@ All under `~/.cache/huggingface/lerobot/` (managed in [utils/config.py](lelab/ut
 - `saved_configs/{leader,follower}_config.txt` — last-selected config name
 - `remote_servers/*.json` — remote SSH server profiles (no passwords); `remote_known_hosts` — host keys the user trusted in the UI
 - `run_videos/*.mp4` — videos of remote model runs (`RUN_VIDEOS_PATH`)
+- `recording_targets/<owner>/<name>.json` — how many episodes each LeLab-recorded dataset was meant to have (`RECORDING_TARGETS_PATH`); kept outside the dataset so it's never pushed
 
 `device_type` in API requests is `"teleop"` or `"robot"` (mapped to leader/follower paths). `robot_type` in port endpoints is `"leader"` or `"follower"`. Don't conflate the two vocabularies.
 

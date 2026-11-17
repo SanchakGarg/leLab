@@ -40,6 +40,8 @@ import {
 import RecordingCameraFeed from "@/components/control/RecordingCameraFeed";
 import { CameraRequest, recordingCameraWindows } from "@/lib/cameraConfig";
 import ArmLinkNotice, { type ArmLinkIssue } from "@/components/control/ArmLinkNotice";
+import SignalGraphs from "@/components/recording/SignalGraphs";
+import { useRecordingSignals } from "@/hooks/useRecordingSignals";
 
 interface RecordingConfig {
   cameras?: Record<string, CameraRequest>;
@@ -67,6 +69,7 @@ interface BackendStatus {
   current_episode?: number;
   total_episodes?: number;
   saved_episodes?: number;
+  episode_offset?: number; // Episodes the dataset had before this session (resume)
   phase_elapsed_seconds?: number;
   phase_time_limit_s?: number;
   session_elapsed_seconds?: number;
@@ -151,6 +154,12 @@ const Recording = () => {
   const cameraWindows = useMemo(() => recordingCameraWindows(
     backendStatus?.cameras ?? [], recordingConfig?.cameras ?? {}, cameraArea,
   ), [backendStatus?.cameras, recordingConfig?.cameras, cameraArea]);
+
+  // The arms only move (and get graphed) while recording or resetting.
+  const signals = useRecordingSignals(
+    backendStatus?.current_phase === "recording" ||
+      backendStatus?.current_phase === "resetting",
+  );
 
   const toggleMute = useCallback(() => {
     setMutedState((prev) => {
@@ -662,9 +671,11 @@ const Recording = () => {
 
   const realPhase = backendStatus.current_phase as Phase;
   const currentPhase: Phase = optimisticPhase ?? realPhase;
-  const currentEpisode = backendStatus.current_episode ?? 1;
+  // Numbered across the whole dataset: resuming at 12 shows episode 13, not 1.
+  const episodeOffset = backendStatus.episode_offset ?? 0;
+  const currentEpisode = (backendStatus.current_episode ?? 1) + episodeOffset;
   const totalEpisodes =
-    backendStatus.total_episodes ?? recordingConfig.num_episodes;
+    (backendStatus.total_episodes ?? recordingConfig.num_episodes) + episodeOffset;
 
   const phaseElapsedTime = optimisticPhase
     ? 0
@@ -803,28 +814,38 @@ const Recording = () => {
               recording/resetting. This is the flexible region: it absorbs the
               space left after the fixed chrome, and cameraWindow sizes each feed
               as large as fits so the whole page stays within one screen. */}
-          {backendStatus.cameras &&
-            backendStatus.cameras.length > 0 &&
-            currentPhase !== "completed" && (
-              <div
-                ref={cameraAreaRef}
-                className="flex-1 min-h-0 flex flex-wrap gap-3 justify-center content-center overflow-hidden mb-3"
-              >
-                {backendStatus.cameras.map((name) => (
-                  <RecordingCameraFeed
-                    key={name}
-                    baseUrl={baseUrl}
-                    name={name}
-                    live={
-                      currentPhase === "recording" ||
-                      currentPhase === "resetting"
-                    }
-                    width={cameraWindows[name]?.width ?? 0}
-                    height={cameraWindows[name]?.height ?? 0}
-                  />
-                ))}
+          {/* The action/observation graphs sit beside the cameras, in the
+              area's bottom-right corner, rather than over the page: the
+              camera area is measured, so the feeds shrink to make room and
+              nothing (least of all the controls) gets covered. */}
+          {currentPhase !== "completed" &&
+            (backendStatus.cameras && backendStatus.cameras.length > 0 ? (
+              <div className="flex-1 min-h-0 flex gap-3 mb-3">
+                <div
+                  ref={cameraAreaRef}
+                  className="flex-1 min-h-0 min-w-0 flex flex-wrap gap-3 justify-center content-center overflow-hidden"
+                >
+                  {backendStatus.cameras.map((name) => (
+                    <RecordingCameraFeed
+                      key={name}
+                      baseUrl={baseUrl}
+                      name={name}
+                      live={
+                        currentPhase === "recording" ||
+                        currentPhase === "resetting"
+                      }
+                      width={cameraWindows[name]?.width ?? 0}
+                      height={cameraWindows[name]?.height ?? 0}
+                    />
+                  ))}
+                </div>
+                <SignalGraphs signals={signals} />
               </div>
-            )}
+            ) : (
+              <div className="flex justify-end mb-3 flex-shrink-0">
+                <SignalGraphs signals={signals} />
+              </div>
+            ))}
 
           <div className="text-center mb-3 flex-shrink-0">
             <div className="flex items-baseline justify-center gap-3">

@@ -65,6 +65,7 @@ from .record import (
     handle_delete_dataset,
     handle_exit_early,
     handle_get_dataset_info,
+    handle_recording_signals,
     handle_recording_status,
     handle_rerecord_episode,
     handle_start_recording,
@@ -637,6 +638,12 @@ def stop_recording():
 def recording_status():
     """Get the current recording status"""
     return handle_recording_status()
+
+
+@app.get("/recording-signals")
+def recording_signals(since: int = 0):
+    """Action and observation joint positions recorded after sequence `since`."""
+    return handle_recording_signals(since)
 
 
 @app.get("/camera-feed/{cam_key}")

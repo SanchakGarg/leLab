@@ -22,9 +22,19 @@ const readSendAfter = (): boolean => {
 export interface AppendTarget {
   repoId: string;
   numEpisodes: number;
+  /** Episodes the recording was meant to have; null when LeLab doesn't know. */
+  targetEpisodes: number | null;
   fps: number;
   imageFeatures: ImageFeatures;
 }
+
+/** Whether the dataset stopped short of the episodes it was meant to have. */
+export const isUnfinished = (target: AppendTarget): boolean =>
+  target.targetEpisodes !== null && target.targetEpisodes > target.numEpisodes;
+
+/** Episodes appending starts with: the rest of the plan, else 5 more. */
+export const defaultTotalEpisodes = (target: AppendTarget): number =>
+  isUnfinished(target) ? (target.targetEpisodes as number) : target.numEpisodes + 5;
 
 /**
  * Owns the recording modal's state and the "start recording" orchestration,
@@ -41,6 +51,8 @@ export const useRecording = (robot: RobotRecord | null) => {
   const [datasetName, setDatasetName] = useState("");
   const [singleTask, setSingleTask] = useState("");
   const [numEpisodes, setNumEpisodes] = useState(5);
+  // Appending asks for the dataset's new total rather than a count to add.
+  const [totalEpisodes, setTotalEpisodes] = useState(0);
   const [episodeTimeS, setEpisodeTimeS] = useState(60);
   const [resetTimeS, setResetTimeS] = useState(15);
   const [streamingEncoding, setStreamingEncoding] = useState(true);
@@ -77,6 +89,7 @@ export const useRecording = (robot: RobotRecord | null) => {
   /** Open the modal to append episodes, prefilled with the dataset's last task. */
   const openToAppend = (target: AppendTarget, lastTask: string) => {
     setAppendTo(target);
+    setTotalEpisodes(defaultTotalEpisodes(target));
     setSingleTask(lastTask);
     setOpen(true);
   };
@@ -113,6 +126,14 @@ export const useRecording = (robot: RobotRecord | null) => {
         description: appendTo
           ? "Please enter a task description."
           : "Please enter a dataset name and task description.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (appendTo && totalEpisodes <= appendTo.numEpisodes) {
+      toast({
+        title: "Total episodes too low",
+        description: `The dataset already has ${appendTo.numEpisodes} episodes. Enter a higher total.`,
         variant: "destructive",
       });
       return;
@@ -158,7 +179,9 @@ export const useRecording = (robot: RobotRecord | null) => {
       follower_config: robot.follower_config,
       dataset_repo_id: datasetRepoId,
       single_task: singleTask,
-      num_episodes: numEpisodes,
+      // The backend records this many in the session; on append that is
+      // whatever the new total still needs.
+      num_episodes: appendTo ? totalEpisodes - appendTo.numEpisodes : numEpisodes,
       episode_time_s: episodeTimeS,
       reset_time_s: resetTimeS,
       // LeRobot refuses to append frames at a different rate than the dataset's.
@@ -191,6 +214,8 @@ export const useRecording = (robot: RobotRecord | null) => {
       setSingleTask,
       numEpisodes,
       setNumEpisodes,
+      totalEpisodes,
+      setTotalEpisodes,
       episodeTimeS,
       setEpisodeTimeS,
       resetTimeS,

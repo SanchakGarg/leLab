@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Loader2,
   Merge,
+  Play,
   Send,
   SquareArrowOutUpRight,
   Trash2,
@@ -27,7 +28,7 @@ import SendToServerDialog from "@/components/remote/SendToServerDialog";
 import { useApi } from "@/contexts/ApiContext";
 import { useDatasets } from "@/hooks/useDatasets";
 import { useEpisodeDetail, useEpisodes } from "@/hooks/useEpisodes";
-import { useRecording } from "@/hooks/useRecording";
+import { isUnfinished, useRecording } from "@/hooks/useRecording";
 import { useRobots } from "@/hooks/useRobots";
 import { useToast } from "@/hooks/use-toast";
 import { formatDuration } from "@/lib/datasetApi";
@@ -91,6 +92,7 @@ const EditDataset = () => {
       ? {
           repoId,
           numEpisodes: data.total_episodes,
+          targetEpisodes: data.target_episodes ?? null,
           fps: data.fps,
           imageFeatures: data.image_features,
         }
@@ -324,8 +326,17 @@ const EditDataset = () => {
                 onClick={() => recording.openToAppend(appendTarget, lastTask)}
                 className="h-9 gap-1.5 border-gray-800 bg-gray-950 text-xs text-gray-300 hover:bg-gray-900"
               >
-                <Disc className="h-3.5 w-3.5 text-red-500" />
-                Record more
+                {isUnfinished(appendTarget) ? (
+                  <>
+                    <Play className="h-3.5 w-3.5 text-red-500" />
+                    Resume ({appendTarget.numEpisodes}/{appendTarget.targetEpisodes})
+                  </>
+                ) : (
+                  <>
+                    <Disc className="h-3.5 w-3.5 text-red-500" />
+                    Record more
+                  </>
+                )}
               </Button>
             )}
           </div>

@@ -463,3 +463,183 @@ def test_handle_delete_dataset_hub_failure_keeps_local_copy(
 
     assert result["success"] is False
     assert dataset_dir.exists()
+
+
+# ── Recording targets (resume up to the planned count) ──────────────────────
+
+
+def _request(repo_id: str, num_episodes: int, resume: bool):
+    from lelab.record import RecordingRequest
+
+    return RecordingRequest(
+        leader_port="/dev/leader",
+        follower_port="/dev/follower",
+        leader_config="leader",
+        follower_config="follower",
+        dataset_repo_id=repo_id,
+        single_task="pick",
+        num_episodes=num_episodes,
+        resume=resume,
+    )
+
+
+def _record_until_the_arm(record, monkeypatch: pytest.MonkeyPatch, request) -> None:
+    """Run `record_with_web_events` up to the robot connection, which fails:
+    the dataset is created (or resumed) by then, so the target is saved."""
+    robot = MagicMock(name="robot")
+    robot.name = "so101_follower"
+    robot.cameras = {}
+    robot.action_features = {"a.pos": float}
+    robot.observation_features = {"a.pos": float}
+    robot.bus.connect.side_effect = RuntimeError("no arm")
+    monkeypatch.setattr("lerobot.robots.make_robot_from_config", lambda c: robot)
+    monkeypatch.setattr("lerobot.teleoperators.make_teleoperator_from_config", lambda c: MagicMock())
+    # The test dataset's features aren't the fake robot's.
+    monkeypatch.setattr(
+        "lerobot.common.control_utils.sanity_check_dataset_robot_compatibility", lambda *a: None
+    )
+    monkeypatch.setattr(record, "setup_calibration_files", lambda leader, follower: ("leader", "follower"))
+    monkeypatch.setattr(record, "safe_disconnect_device", lambda *a, **k: None)
+    monkeypatch.setattr(record, "episode_offset", 0)
+
+    config = record.create_record_config(request)
+    events = {"exit_early": False, "stop_recording": False, "rerecord_episode": False}
+    with pytest.raises(RuntimeError, match="no arm"):
+        record.record_with_web_events(config, events)
+
+
+def test_new_recording_saves_its_target_before_any_episode(
+    tmp_lerobot_home, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lelab.record as record
+    from lelab.utils.config import load_recording_target
+
+    _record_until_the_arm(record, monkeypatch, _request("local/new_ds", 4, resume=False))
+    assert load_recording_target("local/new_ds") == 4
+    assert record.episode_offset == 0
+
+
+def test_resume_targets_the_existing_episodes_plus_the_new_ones(
+    tmp_lerobot_home, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import lelab.record as record
+    from lelab.utils.config import load_recording_target, save_recording_target
+
+    _record("local/ds")
+    save_recording_target("local/ds", 3)
+
+    _record_until_the_arm(record, monkeypatch, _request("local/ds", 5, resume=True))
+    assert load_recording_target("local/ds") == EPISODES + 5
+    assert record.episode_offset == EPISODES
+
+
+def test_status_reports_the_episode_offset(monkeypatch: pytest.MonkeyPatch) -> None:
+    import lelab.record as record
+
+    monkeypatch.setattr(record, "recording_active", True)
+    monkeypatch.setattr(record, "recording_config", _request("local/ds", 5, resume=True))
+    monkeypatch.setattr(record, "episode_offset", 12)
+    status = record.handle_recording_status()
+    assert status["episode_offset"] == 12
+    assert status["total_episodes"] == 5
+
+
+def test_handle_delete_dataset_forgets_the_target(tmp_lerobot_home) -> None:
+    from lelab.record import DatasetInfoRequest, handle_delete_dataset
+    from lelab.utils.config import load_recording_target, save_recording_target
+
+    (tmp_lerobot_home / "alice" / "pusht" / "meta").mkdir(parents=True)
+    save_recording_target("alice/pusht", 10)
+
+    assert handle_delete_dataset(DatasetInfoRequest(dataset_repo_id="alice/pusht"))["success"] is True
+    assert load_recording_target("alice/pusht") is None
+
+
+# ── Live action/observation signals ─────────────────────────────────────────
+
+
+def test_joint_positions_keeps_only_numeric_pos_keys() -> None:
+    import numpy as np
+
+    from lelab.record import _joint_positions
+
+    values = {
+        "shoulder_pan.pos": 12.5,
+        "gripper.pos": np.float32(3.0),
+        "elbow_flex.vel": 1.0,
+        "front": np.zeros((4, 4, 3)),
+        "wrist.pos": "n/a",
+        "flag.pos": True,
+    }
+    assert _joint_positions(values) == {"shoulder_pan": 12.5, "gripper": 3.0}
+    assert _joint_positions(None) == {}
+
+
+def test_signal_tap_passes_the_output_through_and_records_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    import lelab.record as record
+
+    recorder = record._SignalRecorder()
+    monkeypatch.setattr(record, "_signals", recorder)
+    out = {"shoulder_pan.pos": 1.0, "front": object()}
+    inner = MagicMock(return_value=out)
+    inner.steps = ["step"]
+    tap = record._SignalTap(inner, "observation")
+
+    assert tap(("act", "obs")) is out
+    inner.assert_called_once_with(("act", "obs"))
+    assert tap.steps == ["step"]  # anything else reaches the pipeline
+    samples = recorder.since(0)["observation"]
+    assert [s["joints"] for s in samples] == [{"shoulder_pan": 1.0}]
+
+
+def test_signal_tap_never_breaks_the_control_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    import lelab.record as record
+
+    broken = MagicMock()
+    broken.add.side_effect = RuntimeError("boom")
+    monkeypatch.setattr(record, "_signals", broken)
+    tap = record._SignalTap(lambda x: {"a.pos": 1.0}, "action")
+
+    assert tap(None) == {"a.pos": 1.0}
+    assert tap(None) == {"a.pos": 1.0}
+
+
+def test_recording_signals_returns_only_newer_samples(monkeypatch: pytest.MonkeyPatch) -> None:
+    import lelab.record as record
+
+    recorder = record._SignalRecorder()
+    monkeypatch.setattr(record, "_signals", recorder)
+    assert record.handle_recording_signals(0) == {"seq": 0, "action": [], "observation": []}
+
+    recorder.add("action", {"a.pos": 1.0})
+    recorder.add("observation", {"a.pos": 1.5})
+    first = record.handle_recording_signals(0)
+    assert first["seq"] == 2
+    assert [s["joints"]["a"] for s in first["action"]] == [1.0]
+    assert [s["joints"]["a"] for s in first["observation"]] == [1.5]
+
+    recorder.add("action", {"a.pos": 2.0})
+    later = record.handle_recording_signals(first["seq"])
+    assert [s["joints"]["a"] for s in later["action"]] == [2.0]
+    assert later["observation"] == []
+
+
+def test_signal_recorder_keeps_a_window_and_numbers_across_sessions() -> None:
+    import lelab.record as record
+
+    recorder = record._SignalRecorder()
+    recorder.reset(fps=2)  # keeps 2 * SIGNAL_WINDOW_S samples per stream
+    limit = int(2 * record.SIGNAL_WINDOW_S)
+    for i in range(limit + 5):
+        recorder.add("action", {"a.pos": float(i)})
+    assert len(recorder.since(0)["action"]) == limit
+
+    seq = recorder.since(0)["seq"]
+    recorder.reset(fps=2)  # a new session: old samples go, numbering goes on
+    recorder.add("action", {"a.pos": 99.0})
+    assert [s["joints"]["a"] for s in recorder.since(seq)["action"]] == [99.0]
+
+
+def test_recording_signals_route(client) -> None:
+    body = client.get("/recording-signals", params={"since": 0}).json()
+    assert set(body) == {"seq", "action", "observation"}

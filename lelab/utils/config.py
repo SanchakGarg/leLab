@@ -54,6 +54,10 @@ REMOTE_SERVERS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/remote_se
 REMOTE_KNOWN_HOSTS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/remote_known_hosts")
 # Videos of model runs on the arm (remote inference with "Record a video").
 RUN_VIDEOS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/run_videos")
+# How many episodes each recorded dataset was meant to have, one JSON per
+# dataset (`<owner>/<name>.json`). LeRobot's metadata has no such field; kept
+# outside the dataset so nothing extra is pushed to the Hub or a server.
+RECORDING_TARGETS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/recording_targets")
 
 # Tag stamped on every dataset pushed to the Hub from LeLab, so we can later
 # query the Hub for LeLab-produced datasets and compute usage metrics.
@@ -575,3 +579,48 @@ def delete_remote_server(name: str) -> bool:
     os.remove(path)
     logger.info(f"Deleted remote server {name}")
     return True
+
+
+# ---------------------------------------------------------------------------
+# Recording targets
+# ---------------------------------------------------------------------------
+
+
+def _recording_target_path(repo_id: str) -> str | None:
+    """`RECORDING_TARGETS_PATH/<owner>/<name>.json`, or None for an id that
+    isn't a plain `owner/name` (it would escape the folder)."""
+    parts = repo_id.split("/")
+    if len(parts) != 2 or not all(is_valid_robot_name(p) and p not in (".", "..") for p in parts):
+        return None
+    return os.path.join(RECORDING_TARGETS_PATH, parts[0], f"{parts[1]}.json")
+
+
+def load_recording_target(repo_id: str) -> int | None:
+    """How many episodes the dataset was meant to have, or None when unknown
+    (recorded elsewhere, before LeLab kept targets, or an unreadable file)."""
+    path = _recording_target_path(repo_id)
+    if path is None or not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            value = json.load(f).get("target_episodes")
+    except (OSError, ValueError, AttributeError) as e:
+        logger.warning(f"Could not read the recording target of {repo_id}: {e}")
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def save_recording_target(repo_id: str, target_episodes: int) -> bool:
+    """Remember the planned episode count. Returns False for an invalid id."""
+    path = _recording_target_path(repo_id)
+    if path is None or target_episodes < 1:
+        return False
+    _atomic_write_text(path, json.dumps({"target_episodes": int(target_episodes)}))
+    return True
+
+
+def delete_recording_target(repo_id: str) -> None:
+    """Forget the planned episode count (the dataset was deleted)."""
+    path = _recording_target_path(repo_id)
+    if path is not None and os.path.exists(path):
+        os.remove(path)

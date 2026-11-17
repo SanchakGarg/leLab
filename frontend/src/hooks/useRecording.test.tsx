@@ -59,3 +59,45 @@ test("never asks without a saved server", async () => {
   expect(options.state.sendToServer).toBe(false);
   expect(recording.modalProps.sendServerName).toBeNull();
 });
+
+const dataset = (targetEpisodes: number | null) => ({
+  repoId: "local/ds", numEpisodes: 12, targetEpisodes, fps: 30, imageFeatures: {},
+});
+
+async function appendTo(target: ReturnType<typeof dataset>) {
+  mocks.remote = null;
+  await act(async () => root.render(<Harness />));
+  act(() => recording.openToAppend(target, "pick the cube"));
+}
+
+async function start() {
+  await act(async () => {
+    await recording.modalProps.onStart();
+  });
+  return mocks.navigate.mock.calls.at(-1)?.[1]?.state.recordingConfig;
+}
+
+test("resuming records the episodes the plan still needs", async () => {
+  await appendTo(dataset(20));
+  expect(recording.modalProps.totalEpisodes).toBe(20);
+  const config = await start();
+  expect(config.num_episodes).toBe(8);
+  expect(config.resume).toBe(true);
+  expect(config.dataset_repo_id).toBe("local/ds");
+});
+
+test("recording more asks for a higher total", async () => {
+  await appendTo(dataset(null));
+  expect(recording.modalProps.totalEpisodes).toBe(17);
+
+  act(() => recording.modalProps.setTotalEpisodes(12));
+  expect(await start()).toBeUndefined();
+
+  act(() => recording.modalProps.setTotalEpisodes(14));
+  expect((await start()).num_episodes).toBe(2);
+});
+
+test("a finished plan counts as recording more", async () => {
+  await appendTo({ ...dataset(12) });
+  expect(recording.modalProps.totalEpisodes).toBe(17);
+});

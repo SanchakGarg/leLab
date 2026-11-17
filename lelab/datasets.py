@@ -30,6 +30,7 @@ from lerobot.datasets import LeRobotDataset
 from lerobot.datasets.dataset_tools import delete_episodes, merge_datasets, modify_tasks
 
 from . import episode_media
+from .utils.config import load_recording_target
 from .utils.hf_auth import cached_whoami, shared_hf_api
 
 logger = logging.getLogger(__name__)
@@ -589,6 +590,8 @@ def handle_list_episodes(repo_id: str) -> dict[str, Any]:
         "fps": info.get("fps"),
         "robot_type": info.get("robot_type"),
         "total_episodes": info.get("total_episodes", len(rows)),
+        # Episodes the recording was meant to have, when LeLab recorded it.
+        "target_episodes": load_recording_target(repo_id),
         "total_frames": info.get("total_frames"),
         "image_features": image_features,
         "episodes": [

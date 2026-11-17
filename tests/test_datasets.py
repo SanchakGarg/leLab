@@ -996,3 +996,17 @@ def test_motion_route_returns_one_value_per_frame(client: TestClient, browsable_
 def test_motion_route_unknown_dataset(client: TestClient, tmp_lerobot_home: Path) -> None:
     r = client.get("/dataset-motion", params={"repo_id": "nope/nope", "episode_index": 0})
     assert r.json()["success"] is False
+
+
+def test_list_episodes_reports_the_recording_target(client: TestClient, browsable_dataset: str) -> None:
+    from lelab.utils import config as cfg
+
+    assert (
+        client.get("/dataset-episodes", params={"repo_id": browsable_dataset}).json()["target_episodes"]
+        is None
+    )
+
+    cfg.save_recording_target(browsable_dataset, 5)
+    body = client.get("/dataset-episodes", params={"repo_id": browsable_dataset}).json()
+    assert body["total_episodes"] == 3
+    assert body["target_episodes"] == 5

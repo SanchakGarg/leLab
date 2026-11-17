@@ -15,6 +15,8 @@ export interface EpisodeListResponse {
   fps: number | null;
   robot_type: string | null;
   total_episodes: number;
+  /** Episodes the recording was meant to have, when LeLab recorded it. */
+  target_episodes?: number | null;
   total_frames: number | null;
   image_features: ImageFeatures;
   episodes: EpisodeSummary[];
