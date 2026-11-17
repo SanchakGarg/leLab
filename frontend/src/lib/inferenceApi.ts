@@ -21,6 +21,26 @@ export interface InferenceStatus {
   log_path: string | null;
   exited?: boolean;
   exit_code?: number | null;
+  outcome?: "ok" | "ran_with_warning" | "failed";
+  error?: string | null;
+  hint?: string | null;
+  /** "remote" when the policy runs on a remote server (lelab_policy_server.py). */
+  mode?: "local" | "remote";
+  remote?: RemoteRunStats;
+  returned_to_start?: boolean | null;
+}
+
+export interface RemoteRunStats {
+  address: string;
+  policy: string | null;
+  phase: string;
+  steps: number;
+  fps: number;
+  chunks: number;
+  rtt_ms_median: number | null;
+  infer_ms_median: number | null;
+  wait_s: number;
+  actions_per_chunk: number;
 }
 
 export async function startInference(

@@ -19,13 +19,14 @@ import HubJobCard from "./HubJobCard";
 import HubModelCard from "./HubModelCard";
 import InferenceModal from "@/components/landing/InferenceModal";
 import ImportModelModal from "./ImportModelModal";
+import RemoteInferenceModal from "@/components/remote/RemoteInferenceModal";
 import { useRobots } from "@/hooks/useRobots";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ChevronRight, Download, RefreshCw, Search } from "lucide-react";
+import { ChevronRight, Download, RefreshCw, Search, Server } from "lucide-react";
 
 const LIMIT = 10;
 
@@ -53,6 +54,7 @@ const JobsSection: React.FC = () => {
   const { selectedRecord } = useRobots();
   const [inferenceModalOpen, setInferenceModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [remoteModalOpen, setRemoteModalOpen] = useState(false);
   const [inferenceJob, setInferenceJob] = useState<JobRecord | null>(null);
   const [inferenceStep, setInferenceStep] = useState<number | null>(null);
 
@@ -269,6 +271,15 @@ const JobsSection: React.FC = () => {
             Import model
           </Button>
           <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRemoteModalOpen(true)}
+            className="h-8 border-slate-700 bg-slate-800/50 text-slate-200 hover:text-white"
+          >
+            <Server className="w-3.5 h-3.5 mr-1.5" />
+            Run model on server
+          </Button>
+          <Button
             variant="ghost"
             size="icon"
             onClick={refresh}
@@ -421,6 +432,10 @@ const JobsSection: React.FC = () => {
           jobId={inferenceJob.id}
           initialStep={inferenceStep}
         />
+      ) : null}
+
+      {remoteModalOpen ? (
+        <RemoteInferenceModal open={remoteModalOpen} onOpenChange={setRemoteModalOpen} robot={selectedRecord} />
       ) : null}
 
       <ImportModelModal

@@ -60,13 +60,13 @@ const Inference: React.FC = () => {
         if (!next.inference_active && !navigatedAwayRef.current) {
           navigatedAwayRef.current = true;
           if (next.exited) {
+            const failed = next.exit_code !== 0;
             toast({
-              title: "Inference finished",
-              description:
-                next.exit_code === 0
-                  ? "Run completed."
-                  : `Exit code ${next.exit_code}. See ${next.log_path}.`,
-              variant: next.exit_code === 0 ? "default" : "destructive",
+              title: failed ? "Inference stopped with an error" : "Inference finished",
+              description: !failed
+                ? "Run completed."
+                : next.hint || next.error || (next.log_path ? `Exit code ${next.exit_code}. See ${next.log_path}.` : `Exit code ${next.exit_code}.`),
+              variant: failed ? "destructive" : "default",
             });
           }
           navigate("/");
@@ -214,6 +214,14 @@ const Inference: React.FC = () => {
 
           <div className="text-xs text-slate-500 break-all mb-6">
             policy: {status.policy_ref ?? "(unknown)"}
+            {status.remote ? (
+              <div className="mt-1 text-slate-400">
+                remote: {status.remote.phase} · {status.remote.chunks} chunks · round trip{" "}
+                {status.remote.rtt_ms_median != null ? `${Math.round(status.remote.rtt_ms_median)} ms` : "–"} (inference{" "}
+                {status.remote.infer_ms_median != null ? `${Math.round(status.remote.infer_ms_median)} ms` : "–"}) · waited{" "}
+                {status.remote.wait_s.toFixed(1)} s
+              </div>
+            ) : null}
           </div>
 
           <Button
@@ -232,8 +240,9 @@ const Inference: React.FC = () => {
           <AlertDialogHeader>
             <AlertDialogTitle>Stop inference?</AlertDialogTitle>
             <AlertDialogDescription className="text-gray-400">
-              The follower will hold its current pose. You can launch another
-              run from the job tile.
+              The follower returns to the pose it started from, then its
+              motors are released. You can launch another run from the jobs
+              list.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
