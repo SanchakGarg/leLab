@@ -39,6 +39,7 @@ import {
 
 import RecordingCameraFeed from "@/components/control/RecordingCameraFeed";
 import { CameraRequest, recordingCameraWindows } from "@/lib/cameraConfig";
+import ArmLinkNotice, { type ArmLinkIssue } from "@/components/control/ArmLinkNotice";
 
 interface RecordingConfig {
   cameras?: Record<string, CameraRequest>;
@@ -73,6 +74,7 @@ interface BackendStatus {
   dataset_repo_id?: string;
   error?: string;
   cameras?: string[]; // Names of the cameras configured for this session
+  arm_link_issues?: ArmLinkIssue[]; // An arm that isn't answering, or didn't for a while this phase
   available_controls: {
     stop_recording: boolean;
     exit_early: boolean;
@@ -724,6 +726,11 @@ const Recording = () => {
         </div>
 
         <div className="bg-gray-900 rounded-lg border border-gray-700 p-6 flex-1 min-h-0 flex flex-col justify-center">
+          <ArmLinkNotice
+            issues={backendStatus.arm_link_issues}
+            recording={currentPhase === "recording"}
+            className="mb-3 flex-shrink-0"
+          />
           <div className="flex justify-between items-center gap-4 mb-3 flex-shrink-0">
             <div
               className="flex items-baseline gap-2 rounded-lg bg-gray-800 px-4 py-2"

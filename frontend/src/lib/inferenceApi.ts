@@ -1,5 +1,6 @@
 import { Fetcher, apiRequest } from "./apiClient";
 import { CameraRequest } from "./cameraConfig";
+import type { ArmLinkIssue } from "@/components/control/ArmLinkNotice";
 
 export interface StartInferenceRequest {
   follower_port: string;
@@ -28,6 +29,8 @@ export interface InferenceStatus {
   mode?: "local" | "remote";
   remote?: RemoteRunStats;
   returned_to_start?: boolean | null;
+  /** The follower's USB link failing now, or for a while recently (remote runs). */
+  arm_link_issues?: ArmLinkIssue[];
 }
 
 export interface RemoteRunStats {
@@ -41,6 +44,8 @@ export interface RemoteRunStats {
   infer_ms_median: number | null;
   wait_s: number;
   actions_per_chunk: number;
+  /** Follower reads/writes that failed and were skipped (USB glitches). */
+  arm_skipped?: number;
 }
 
 export async function startInference(

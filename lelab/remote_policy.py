@@ -52,6 +52,7 @@ from . import remote_ssh
 from .camera_config import validate_camera_rotations
 from .policy_server import encode_jpeg, recv_msg, send_msg
 from .remote_ssh import RemoteServerError
+from .utils.bus_guard import GUARD_ATTR, ArmCommunicationLostError, BusGuard, notable_outages
 from .utils.devices import safe_disconnect_device
 
 logger = logging.getLogger(__name__)
@@ -385,6 +386,8 @@ class RemoteRun:
         self.error: str | None = None
         self.hint: str | None = None
         self.returned_to_start: bool | None = None
+        # Glitch tolerance on the follower's bus, from start() to the release.
+        self.guard: BusGuard | None = None
 
     @property
     def policy_ref(self) -> str:
@@ -393,6 +396,8 @@ class RemoteRun:
     def _observe(self) -> tuple[np.ndarray, dict[str, np.ndarray]]:
         try:
             obs = self.robot.get_observation()
+        except ArmCommunicationLostError as exc:
+            raise _RobotIOError(exc, motors_ok=False) from exc
         except Exception as exc:
             raise _RobotIOError(exc, motors_ok=_motors_respond(self.robot)) from exc
         state = np.array([obs[f"{m}.pos"] for m in self.motors], np.float32)
@@ -436,7 +441,8 @@ class RemoteRun:
             pass
         except _RobotIOError as exc:
             motors_ok = exc.motors_ok
-            self.error = f"{type(exc.exc).__name__}: {exc.exc}"
+            lost = isinstance(exc.exc, ArmCommunicationLostError)
+            self.error = str(exc.exc) if lost else f"{type(exc.exc).__name__}: {exc.exc}"
             logger.error("Remote inference: robot I/O failed: %s", self.error)
         except RemotePolicyError as exc:
             self.error = str(exc)
@@ -450,6 +456,8 @@ class RemoteRun:
             if self.request.return_to_start and initial and motors_ok:
                 self.phase = "returning to the start pose"
                 self.returned_to_start = return_to(self.robot, initial)
+            if self.guard is not None:
+                self.guard.uninstall()
             safe_disconnect_device(self.robot, logger)
             self.phase = "stopped"
             self.finished = True
@@ -459,6 +467,10 @@ class RemoteRun:
             logger.info("Remote inference ended after %d steps (%s)", self.steps, self.error or "ok")
 
     def start(self) -> None:
+        # A failed read or write of the follower is skipped (the last positions
+        # stand in) until it stops answering for MAX_OUTAGE_S. It stays on for
+        # the way back, so a glitch there doesn't drop the arm.
+        self.guard = BusGuard(self.robot.bus, "follower arm").install()
         initial = None
         try:
             positions = self.robot.bus.sync_read("Present_Position")
@@ -486,7 +498,9 @@ class RemoteRun:
                 "steps": self.steps,
                 "fps": self.fps,
                 **self.client.stats(),
+                "arm_skipped": self.guard.skipped if self.guard else 0,
             },
+            "arm_link_issues": notable_outages([self.guard], since=time.time() - 5) if self.guard else [],
         }
 
     def result(self) -> dict[str, Any]:
@@ -504,8 +518,10 @@ class RemoteRun:
 
 
 def _motors_respond(robot: Any) -> bool:
+    guard = getattr(robot.bus, GUARD_ATTR, None)
     try:
-        robot.bus.sync_read("Present_Position")
+        # Past the guard, which would answer with the last positions.
+        (guard.raw_read if guard else robot.bus.sync_read)("Present_Position")
         return True
     except Exception:
         return False

@@ -26,6 +26,7 @@ from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.utils.robot_utils import precise_sleep
 
 from . import episode_media
+from .utils.bus_guard import guard_buses, unguard
 from .utils.config import setup_follower_calibration_file
 from .utils.devices import follower_lock, safe_disconnect_device
 
@@ -98,6 +99,10 @@ def handle_start_replay(request: ReplayRequest) -> dict[str, Any]:
         logger.error(f"Failed to start replay: {e}")
         return {"success": False, "message": str(e)}
 
+    # A failed write is skipped (the arm catches up on the next action) until
+    # the arm stops answering for MAX_OUTAGE_S.
+    guards = guard_buses((robot, "follower arm"))
+
     def replay_worker():
         global replay_active, replay_error
 
@@ -112,6 +117,7 @@ def handle_start_replay(request: ReplayRequest) -> dict[str, Any]:
             logger.error(f"Replay failed: {e}")
             replay_error = str(e)
         finally:
+            unguard(guards)
             safe_disconnect_device(robot, logger)
             replay_active = False
             logger.info("Replay ended")

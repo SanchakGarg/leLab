@@ -309,7 +309,27 @@ class FakeFollower:
         self.disconnected = True
 
 
-def _start_run(port: int, **overrides: Any) -> tuple[Any, FakeFollower]:
+class BusFollower(FakeFollower):
+    """A follower whose reads and writes go through its motor bus, which can glitch (as over a noisy USB link)."""
+
+    def __init__(self) -> None:
+        from tests.test_bus_guard import GlitchyBus
+
+        super().__init__()
+        self.bus = GlitchyBus()
+
+    def get_observation(self) -> dict[str, Any]:
+        obs = {f"{m}.pos": v for m, v in self.bus.sync_read("Present_Position").items()}
+        obs["front"] = np.zeros((48, 64, 3), np.uint8)
+        return obs
+
+    def send_action(self, action: dict[str, float]) -> dict[str, float]:
+        self.sent.append(action)
+        self.bus.sync_write("Goal_Position", {k.removesuffix(".pos"): v for k, v in action.items()})
+        return action
+
+
+def _start_run(port: int, robot: Any = None, **overrides: Any) -> tuple[Any, FakeFollower]:
     from lelab import rollout
     from lelab.remote_policy import (
         RemoteInferenceRequest,
@@ -331,7 +351,7 @@ def _start_run(port: int, **overrides: Any) -> tuple[Any, FakeFollower]:
     )
     sock, lease, address = open_policy_socket(request)
     hello = read_hello(sock)
-    robot = FakeFollower()
+    robot = robot or FakeFollower()
     assert rollout._claim_inference_slot() is None
     run = RemoteRun(request, robot, RemotePolicyClient(sock, hello, prefetch=3), hello, address, lease)
     rollout._begin_remote_run(run)
@@ -412,6 +432,42 @@ def test_a_failed_motor_command_skips_the_way_back(policy_server) -> None:
     result = rollout.handle_inference_status()
     assert result["outcome"] == "failed"
     assert "Overload" in result["error"]
+    assert result["returned_to_start"] is None
+    assert robot.disconnected
+
+
+def test_a_few_failed_bus_transfers_do_not_stop_the_run(policy_server) -> None:
+    from lelab import rollout
+
+    run, robot = _start_run(policy_server(), robot=BusFollower())
+    _wait_for(lambda: run.steps >= 3)
+    robot.bus.fail_reads = 2
+    robot.bus.fail_writes = 2
+    _wait_for(lambda: run.guard.skipped >= 4)
+    steps = run.steps
+    _wait_for(lambda: run.steps >= steps + 5)
+    assert rollout.handle_inference_status()["remote"]["arm_skipped"] >= 4
+
+    assert rollout.handle_stop_inference()["success"] is True
+    result = rollout.handle_inference_status()
+    assert result["outcome"] == "ok"
+    assert result["returned_to_start"] is True
+    assert "sync_read" not in vars(robot.bus)
+
+
+def test_a_silent_follower_stops_the_run_without_moving_it(policy_server, monkeypatch) -> None:
+    from lelab import rollout
+    from lelab.utils import bus_guard
+
+    monkeypatch.setattr(bus_guard, "MAX_OUTAGE_S", 0.3)
+    run, robot = _start_run(policy_server(), robot=BusFollower())
+    _wait_for(lambda: run.steps >= 3)
+    robot.bus.dead = True
+    _wait_for(lambda: run.finished)
+
+    result = rollout.handle_inference_status()
+    assert result["outcome"] == "failed"
+    assert result["error"].startswith("Lost contact with the follower arm")
     assert result["returned_to_start"] is None
     assert robot.disconnected
 

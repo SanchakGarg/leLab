@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 
+from .utils.bus_guard import guard_buses, notable_outages, unguard
 from .utils.config import setup_calibration_files
 from .utils.devices import follower_lock, safe_disconnect_device
 
@@ -33,6 +34,10 @@ teleoperation_active = False
 teleoperation_thread: threading.Thread | None = None
 current_robot = None
 current_teleop = None
+# Why the last session ended on its own (the arms stopped answering), for the UI.
+teleoperation_error: str | None = None
+# Glitch tolerance on the two buses while a session runs.
+_bus_guards: list = []
 
 
 class TeleoperateRequest(BaseModel):
@@ -114,7 +119,13 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
     dying silently in the worker thread while the API has already claimed
     success. Only the teleoperation loop runs in the background thread.
     """
-    global teleoperation_active, teleoperation_thread, current_robot, current_teleop
+    global \
+        teleoperation_active, \
+        teleoperation_thread, \
+        current_robot, \
+        current_teleop, \
+        teleoperation_error, \
+        _bus_guards
 
     from . import record as _record, replay as _replay, rollout as _rollout
 
@@ -128,9 +139,11 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
         if _replay.replay_active:
             return {"success": False, "message": "Replay is currently active. Stop it first."}
         teleoperation_active = True
+        teleoperation_error = None
 
     robot = None
     teleop_device = None
+    guards: list = []
     try:
         logger.info(
             f"Starting teleoperation with leader port: {request.leader_port}, follower port: {request.follower_port}"
@@ -195,13 +208,18 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
         teleop_device.configure()
         logger.info("Successfully connected to both devices")
 
+        # From here a failed read or write is skipped instead of ending the
+        # session, until an arm stops answering for MAX_OUTAGE_S.
+        guards = guard_buses((teleop_device, "leader arm"), (robot, "follower arm"))
+        _bus_guards = guards
+
         current_robot = robot
         current_teleop = teleop_device
 
         # Stream the arms in the background; the worker owns disconnect so stop()
         # does not race the serial bus from the request thread.
         def teleoperation_worker():
-            global teleoperation_active, current_robot, current_teleop
+            global teleoperation_active, current_robot, current_teleop, teleoperation_error, _bus_guards
 
             logger.info("Starting teleoperation loop...")
             try:
@@ -227,10 +245,14 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
                         except Exception as e:
                             logger.error(f"Error broadcasting joint data: {e}")
 
-                    time.sleep(0.001)
+                    # Don't spin on a bus that fails instantly while it is down.
+                    time.sleep(0.02 if any(g.in_outage for g in guards) else 0.001)
             except Exception as e:
                 logger.error(f"Error during teleoperation loop: {e}")
+                teleoperation_error = str(e) or repr(e)
             finally:
+                unguard(guards)
+                _bus_guards = []
                 _safe_disconnect(robot)
                 _safe_disconnect(teleop_device)
                 logger.info("Teleoperation stopped")
@@ -253,6 +275,8 @@ def handle_start_teleoperation(request: TeleoperateRequest, websocket_manager=No
     except Exception as e:
         # Connection (or setup) failed before the loop started: release any
         # device that did open, reset state, and surface the error.
+        unguard(guards)
+        _bus_guards = []
         _safe_disconnect(robot)
         _safe_disconnect(teleop_device)
         teleoperation_active = False
@@ -296,6 +320,12 @@ def handle_teleoperation_status() -> dict[str, Any]:
         "available_controls": {
             "stop_teleoperation": teleoperation_active,
         },
+        # Set when the session ended on its own (an arm stopped answering).
+        "error": None if teleoperation_active else teleoperation_error,
+        # An arm that isn't answering right now, or stopped answering for a while recently.
+        "arm_link_issues": notable_outages(_bus_guards, since=time.time() - 5)
+        if teleoperation_active
+        else [],
         "message": "Teleoperation status retrieved successfully",
     }
 

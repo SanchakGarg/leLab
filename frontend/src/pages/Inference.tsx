@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Loader2, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Logo from "@/components/Logo";
+import ArmLinkNotice from "@/components/control/ArmLinkNotice";
 import { useApi } from "@/contexts/ApiContext";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -212,6 +213,8 @@ const Inference: React.FC = () => {
             />
           </div>
 
+          <ArmLinkNotice issues={status.arm_link_issues} className="mb-4" />
+
           <div className="text-xs text-slate-500 break-all mb-6">
             policy: {status.policy_ref ?? "(unknown)"}
             {status.remote ? (
@@ -220,6 +223,7 @@ const Inference: React.FC = () => {
                 {status.remote.rtt_ms_median != null ? `${Math.round(status.remote.rtt_ms_median)} ms` : "–"} (inference{" "}
                 {status.remote.infer_ms_median != null ? `${Math.round(status.remote.infer_ms_median)} ms` : "–"}) · waited{" "}
                 {status.remote.wait_s.toFixed(1)} s
+                {status.remote.arm_skipped ? ` · ${status.remote.arm_skipped} arm reads/writes skipped` : ""}
               </div>
             ) : null}
           </div>

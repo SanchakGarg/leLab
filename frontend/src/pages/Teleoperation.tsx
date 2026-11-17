@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import VisualizerPanel from "@/components/control/VisualizerPanel";
 import TeleopCameraPanel from "@/components/control/TeleopCameraPanel";
+import ArmLinkNotice, { type ArmLinkIssue } from "@/components/control/ArmLinkNotice";
 import { useToast } from "@/hooks/use-toast";
 import { useApi } from "@/contexts/ApiContext";
 
@@ -62,13 +63,43 @@ const TeleoperationPage = () => {
     };
   }, [baseUrl, stopTeleoperation]);
 
+  // Brief USB glitches are ridden out by the backend; show them, and say why
+  // when an arm stayed silent long enough to end the session.
+  const [armIssues, setArmIssues] = useState<ArmLinkIssue[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetchWithHeaders(`${baseUrl}/teleoperation-status`);
+        const status = await res.json();
+        if (cancelled) return;
+        setArmIssues(status.arm_link_issues ?? []);
+        if (!status.teleoperation_active && status.error && !stoppedRef.current) {
+          stoppedRef.current = true;
+          toast({ title: "Teleoperation stopped", description: status.error, variant: "destructive" });
+          navigate("/");
+        }
+      } catch {
+        /* the next poll retries */
+      }
+    };
+    const timer = setInterval(poll, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [baseUrl, fetchWithHeaders, navigate, toast]);
+
   const handleGoBack = async () => {
     await stopTeleoperation();
     navigate("/");
   };
 
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center p-2 sm:p-4">
+    <div className="relative min-h-screen bg-black flex items-center justify-center p-2 sm:p-4">
+      {armIssues.length ? (
+        <ArmLinkNotice issues={armIssues} className="absolute left-1/2 top-4 z-20 w-[min(36rem,calc(100%-2rem))] -translate-x-1/2" />
+      ) : null}
       <div className="w-full h-[95vh] flex">
         <VisualizerPanel
           onGoBack={handleGoBack}

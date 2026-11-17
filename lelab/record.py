@@ -32,6 +32,7 @@ from lerobot.teleoperators.so_leader import SO101LeaderConfig
 
 from .camera_config import lerobot_camera_settings, validate_camera_rotations
 from .episode_media import UnreadableDatasetError, ensure_episode_index
+from .utils.bus_guard import guard_buses, notable_outages, unguard
 from .utils.config import setup_calibration_files, with_lelab_tag
 from .utils.devices import follower_lock, safe_disconnect_device
 
@@ -54,6 +55,8 @@ current_episode = 1  # Track current episode number
 saved_episodes = 0  # Track how many episodes have been saved
 current_phase = "preparing"  # Track current phase: "preparing", "recording", "resetting", "completed"
 phase_start_time = None  # Track when current phase started
+# Glitch tolerance on the arms' buses while the devices are up (see utils/bus_guard.py).
+_bus_guards: list = []
 last_recording_info: dict[str, Any] | None = (
     None  # Snapshot of the most recently completed dataset (for /dataset-info)
 )
@@ -524,6 +527,11 @@ def handle_recording_status() -> dict[str, Any]:
             status["session_start_time"] = recording_start_time
             status["session_elapsed_seconds"] = int(time.time() - recording_start_time)
 
+        # An arm that isn't answering now, or that stopped answering during this
+        # phase: the frames of that stretch repeat its last positions, so the
+        # user may want to re-record the episode.
+        status["arm_link_issues"] = notable_outages(_bus_guards, since=phase_start_time)
+
         # Add phase timing information
         if phase_start_time:
             status["phase_start_time"] = phase_start_time
@@ -790,7 +798,7 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDatase
     from lerobot.utils.feature_utils import hw_to_dataset_features
     from lerobot.utils.utils import log_say
 
-    global current_phase, phase_start_time, current_episode, saved_episodes, current_robot
+    global current_phase, phase_start_time, current_episode, saved_episodes, current_robot, _bus_guards
 
     robot = make_robot_from_config(cfg.robot)
     teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
@@ -894,6 +902,11 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDatase
         if teleop is not None:
             teleop.configure()
         logger.info("✅ Devices ready")
+
+        # From here a failed read or write of an arm is skipped (the last
+        # positions stand in for one frame) instead of ending the session,
+        # until an arm stops answering for MAX_OUTAGE_S.
+        _bus_guards = guard_buses((teleop, "leader arm"), (robot, "follower arm"))
 
         # Expose the connected robot so /camera-feed can stream its cameras'
         # latest frames during the session (cleared in the finally below). Set
@@ -1097,6 +1110,8 @@ def record_with_web_events(cfg: RecordConfig, web_events: dict) -> LeRobotDatase
         # Stop the camera-feed endpoint from reading before tearing the cameras
         # down, so it can't peek a half-disconnected device.
         current_robot = None
+        unguard(_bus_guards)
+        _bus_guards = []
         try:
             # Writes the parquet footers for meta/episodes/. Without it the
             # dataset is invalid on disk, so reopening it (upload,
