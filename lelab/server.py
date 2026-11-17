@@ -38,7 +38,14 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 # Import our custom recording functionality
-from . import camera_reference, datasets as dataset_browser, record as _record, remote_ssh, remote_upload
+from . import (
+    camera_reference,
+    datasets as dataset_browser,
+    record as _record,
+    remote_policy,
+    remote_ssh,
+    remote_upload,
+)
 
 # Import our custom calibration functionality
 from .calibrate import CalibrationRequest, calibration_manager
@@ -1565,6 +1572,24 @@ def remote_server_install_policy_server(name: str, request: remote_upload.Instal
     return _remote_call(remote_upload.handle_install_policy_server, name, request)
 
 
+@app.post("/remote-policy/probe", dependencies=REMOTE_GUARD)
+def remote_policy_probe(request: remote_policy.PolicyConnection):
+    """Connect to a policy server (through the server's SSH session or directly) and return its hello."""
+    return _remote_call(remote_policy.probe, request)
+
+
+@app.post("/start-remote-inference", dependencies=REMOTE_GUARD)
+def start_remote_inference(request: remote_policy.RemoteInferenceRequest):
+    """Drive the follower with a policy served on a remote server; status and stop are the inference routes."""
+    result = remote_policy.handle_start_remote_inference(request)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to start remote inference"),
+        )
+    return result
+
+
 @app.post("/remote-upload", dependencies=REMOTE_GUARD)
 def remote_upload_start(request: remote_upload.RemoteUploadRequest):
     """Copy a local dataset to a saved server over SFTP, in the background."""
@@ -1593,6 +1618,10 @@ async def shutdown_event():
     logger.info("🔄 FastAPI shutting down, cleaning up...")
 
     _record.stop_recording_and_wait()
+    with contextlib.suppress(Exception):
+        # A remote-policy run returns the arm to its start pose and releases it.
+        if handle_inference_status().get("mode") == "remote":
+            handle_stop_inference()
     remote_upload.cancel_and_wait()
     remote_ssh.close_all()
 

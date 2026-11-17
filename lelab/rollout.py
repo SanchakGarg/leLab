@@ -61,6 +61,11 @@ class InferenceRequest(BaseModel):
 
 
 inference_active: bool = False
+# "local": the lerobot-rollout subprocess below. "remote": a lelab/remote_policy.py run, whose
+# policy runs on the user's server; it stays in _remote_run after it ends until
+# /inference-status has reported its result once.
+_inference_mode: str = "local"
+_remote_run: Any = None
 _inference_proc: subprocess.Popen | None = None
 _inference_started_at: float | None = None
 _inference_rollout_started_at: float | None = None
@@ -291,13 +296,13 @@ def _classify_outcome(rc: int | None, rollout_started: bool, error_text: str | N
     return "failed"
 
 
-def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
-    """Start a one-shot rollout subprocess. Returns a dict — the route
-    layer turns it into a JSON response or HTTPException as appropriate."""
-    global inference_active, _inference_proc, _inference_started_at
-    global _inference_rollout_started_at, _inference_meta
+def _claim_inference_slot() -> dict[str, Any] | None:
+    """Claim the follower for an inference run, or return the refusal to send back.
 
-    # Mutex with teleop, recording and replay: they all drive the same serial bus.
+    Mutex with teleop, recording and replay: they all drive the same serial bus.
+    """
+    global inference_active
+
     from . import record as _record, replay as _replay, teleoperate as _teleoperate
 
     with follower_lock, _state_lock:
@@ -327,6 +332,40 @@ def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
             }
         # Claim the slot now so a concurrent caller losing the race sees us.
         inference_active = True
+    return None
+
+
+def _release_inference_slot() -> None:
+    global inference_active
+    with _state_lock:
+        inference_active = False
+
+
+def _begin_remote_run(run: Any) -> None:
+    """Record a started remote-policy run (the slot is already claimed)."""
+    global _inference_mode, _remote_run
+    with _state_lock:
+        _inference_mode = "remote"
+        _remote_run = run
+
+
+def _finish_remote_run(run: Any) -> None:
+    """Called by the run's worker once the arm is released: frees the follower for other modes."""
+    global inference_active
+    with _state_lock:
+        if _remote_run is run:
+            inference_active = False
+
+
+def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
+    """Start a one-shot rollout subprocess. Returns a dict — the route
+    layer turns it into a JSON response or HTTPException as appropriate."""
+    global inference_active, _inference_proc, _inference_started_at
+    global _inference_rollout_started_at, _inference_meta, _inference_mode, _remote_run
+
+    refused = _claim_inference_slot()
+    if refused is not None:
+        return refused
 
     # Opened partway through setup; the stdout pump thread takes ownership once
     # it starts. Tracked here so a failure before that hand-off can close it
@@ -405,6 +444,8 @@ def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
         return {"success": False, "status_code": 500, "message": f"Failed to start inference: {exc}"}
 
     with _state_lock:
+        _inference_mode = "local"
+        _remote_run = None
         _inference_proc = proc
         _inference_started_at = time.time()
         _inference_rollout_started_at = None
@@ -420,6 +461,15 @@ def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
 def handle_stop_inference() -> dict[str, Any]:
     global inference_active, _inference_proc, _inference_started_at
     global _inference_rollout_started_at, _inference_meta
+
+    with _state_lock:
+        run = _remote_run if _inference_mode == "remote" else None
+    if run is not None:
+        if run.finished:
+            return {"success": False, "status_code": 409, "message": "No inference is active"}
+        from .remote_policy import stop_run
+
+        return stop_run(run)
 
     with _state_lock:
         if not inference_active or _inference_proc is None:
@@ -449,7 +499,17 @@ def handle_stop_inference() -> dict[str, Any]:
 
 def handle_inference_status() -> dict[str, Any]:
     global inference_active, _inference_proc, _inference_started_at
-    global _inference_rollout_started_at, _inference_meta
+    global _inference_rollout_started_at, _inference_meta, _inference_mode, _remote_run
+
+    with _state_lock:
+        run = _remote_run if _inference_mode == "remote" else None
+        if run is not None and run.finished:
+            # Report a finished remote run once, then go back to idle.
+            _remote_run = None
+            _inference_mode = "local"
+            return run.result()
+    if run is not None:
+        return {"inference_active": True, **run.status()}
 
     # Finalise state lazily if the subprocess died on its own.
     with _state_lock:

@@ -49,6 +49,8 @@ REQUIRED_PATHS = {
     "/remote-servers/{name}/disconnect",
     "/remote-servers/{name}/status",
     "/remote-servers/{name}/install-policy-server",
+    "/remote-policy/probe",
+    "/start-remote-inference",
     "/remote-upload",
     "/remote-upload/status",
     "/remote-upload/cancel",

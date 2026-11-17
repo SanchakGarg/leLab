@@ -37,6 +37,8 @@ def _reset_rollout_globals(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rollout, "_inference_started_at", None)
     monkeypatch.setattr(rollout, "_inference_rollout_started_at", None)
     monkeypatch.setattr(rollout, "_inference_meta", {})
+    monkeypatch.setattr(rollout, "_inference_mode", "local")
+    monkeypatch.setattr(rollout, "_remote_run", None)
 
 
 def test_inference_request_rejects_missing_required_fields() -> None:
