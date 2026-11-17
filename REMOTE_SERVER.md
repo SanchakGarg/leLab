@@ -101,7 +101,8 @@ The log shows the model's cameras and chunk size, three warm-up inferences, and 
    If your computer is on the same network as the GPU node, **Directly** works too.
 2. **Connect to the model.** LeLab shows the model and the cameras it was trained with, at their resolutions.
 3. **Bind a camera to each one.** A robot camera with the same name binds itself. Use the same rotation as in the training data.
-4. **Set the task** (for language-conditioned models) and the duration, then **Start**.
+4. **Set the task** (for language-conditioned models) and the duration.
+5. **Optionally tick Record a video of the run** (see below), then **Start**.
 
 **While it runs**, the Inference page shows the round trip (network plus inference) and how long the arm waited for the server.
 
@@ -109,6 +110,18 @@ How it keeps the arm moving:
 - LeLab asks for the next chunk while 10 actions are still queued (**Prefetch**). The arm keeps moving as long as one round trip is shorter than those actions take to play.
 - It drops the actions already played while a request was out, so each new chunk lines up with the present.
 - **Actions per chunk** replans more often.
+
+## Record a video of the run
+
+Tick **Record a video of the run** before you start. LeLab saves an mp4 of what the model's cameras saw, with one camera full frame and another inset in the bottom-right corner.
+
+- **Two cameras, one of them the wrist camera:** the other camera is full frame and the wrist camera goes in the corner. A camera counts as the wrist camera when its name, or the name of the robot camera bound to it, contains `wrist`, `hand` or `gripper`.
+- **More than two cameras, or two without a wrist camera:** pick the **Full view** camera and the one **In the corner** (or None).
+- **One camera:** it fills the frame.
+
+The video covers the run from the first action to the last, at the control rate. It is written on this computer while the arm moves, without slowing the arm down: if encoding falls behind, frames are dropped.
+
+When the run ends, the Inference page plays the video and offers **Download**. The files are in `~/.cache/huggingface/lerobot/run_videos/`, named after the date, time and checkpoint folder (`20261117_120000_act_pick_cube.mp4`).
 
 ## Safety
 
@@ -121,6 +134,7 @@ How it keeps the arm moving:
   - a camera that stops delivering frames
 - **After a stop, the arm returns to its start pose.** On a fault, Stop, or the end of the duration, the arm moves back to where it started over 3 s, then its motors are released (torque off), as in a local LeLab run. If a motor command itself failed, the arm is released where it is, so support it.
 - **The server takes one client at a time.** A second connection is told it is busy.
+- **Brief USB glitches don't stop the run.** A failed read of the follower reuses its last positions, and a failed write is skipped (the motors hold their last goal). The run stops only when the arm hasn't answered for 10 s, and then the arm is released where it is, so support it. This also applies to teleoperation, recording and replay, for both arms.
 
 ## Troubleshooting
 

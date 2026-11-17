@@ -75,9 +75,13 @@ Train on a GPU machine you reach over SSH, such as a workstation, a cloud VM or 
 2. Tick **Send to server when done** when you record. The dataset goes to the server over SFTP.
 3. Train there with `lerobot-train`.
 4. Start `lelab_policy_server.py` with the trained checkpoint. LeLab copies the script for you.
-5. In **Jobs → Run model on server**, enter the IP and port its log prints. LeLab tunnels through your SSH login, and the model drives the real follower from the server.
+5. In **Jobs → Run model on server**, enter the IP and port its log prints. LeLab tunnels through your SSH login, and the model drives the real follower from the server. Tick **Record a video of the run** to save an mp4 with the wrist camera in a corner.
 
 Your password is never saved. The step-by-step guide, a Slurm example and the safety limits are in [REMOTE_SERVER.md](REMOTE_SERVER.md).
+
+## Noisy USB links
+
+A read or write of an arm that fails now and then (interference, a long cable, a busy hub) no longer ends teleoperation, recording, replay or a model run. LeLab reuses the arm's last positions for that step and carries on, and shows a warning while an arm isn't answering. It stops only after an arm has been silent for 10 s. While recording, a warning also tells you when a gap hit the current episode, so you can re-record it.
 
 ## Camera rotation
 
