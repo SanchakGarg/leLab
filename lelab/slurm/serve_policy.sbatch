@@ -38,6 +38,9 @@ if [ -z "${POLICY:-}" ]; then                 # the most recently finished train
     [ -n "$POLICY" ] || die "no trained policy in $POLICY_DIR yet. Train one (slurm/train_*.sbatch) or set POLICY" \
         "in $ENV_FILE."
     echo "=== POLICY is empty: serving the newest run, $POLICY ==="
+elif [ -L "$(lelab_path "$POLICY")" ] && [ ! -e "$(lelab_path "$POLICY")" ]; then
+    die "$(lelab_path "$POLICY") links to $(readlink "$(lelab_path "$POLICY")"), which no longer exists (its" \
+        "training run was deleted). Train it again, or train with POLICY_COPY=1 to keep a copy."
 elif [ -e "$(lelab_path "$POLICY")" ]; then
     POLICY=$(lelab_path "$POLICY")
 else

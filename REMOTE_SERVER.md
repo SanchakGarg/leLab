@@ -72,7 +72,7 @@ Set these in `.env` once:
 | `DATASET_DIR` | the dataset folder you sent to | where the datasets are |
 | `DATASET` | | the dataset to train on: a folder in `DATASET_DIR`, or an absolute path |
 | `OUTPUT_DIR` | `outputs` | training runs, one folder per run: `<policy>_<full\|lora>_<dataset>[_<RUN_TAG>]` |
-| `POLICY_DIR` | `policies` | each finished run's last checkpoint is copied to `POLICY_DIR/<run>` |
+| `POLICY_DIR` | `policies` | when a run finishes, `POLICY_DIR/<run>` links to its last checkpoint in `OUTPUT_DIR` (no extra space). `POLICY_COPY=1` copies the model instead, so it survives deleting the run's `OUTPUT_DIR` folder. |
 | `POLICY` | newest in `POLICY_DIR` | what `serve_policy.sbatch` serves |
 | `TRACKIO` | `1` | track every run with Trackio (loss, learning rate, speed), project `TRACKIO_PROJECT` (`lelab`), stored in `TRACKIO_DIR` (`trackio`). Set `TRACKIO_SPACE_ID` (and `HF_TOKEN`) to sync live to a private Space instead. `0` turns it off. |
 

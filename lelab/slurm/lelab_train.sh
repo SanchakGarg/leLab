@@ -6,7 +6,7 @@
 #
 # Each run trains in $OUTPUT_DIR/<kind>_<finetune>_<dataset>[_<RUN_TAG>]. Submitting the same job again resumes it
 # from its last checkpoint (after a time limit or scancel). When it finishes, the trained policy is copied to
-# $POLICY_DIR/<run>, which slurm/serve_policy.sbatch serves.
+# $POLICY_DIR/<run> (a link to its last checkpoint; POLICY_COPY=1 copies it), which slurm/serve_policy.sbatch serves.
 
 # shellcheck source=lelab_common.sh
 source "$PROJECT_DIR/slurm/lelab_common.sh"
@@ -179,9 +179,13 @@ fi
 SRC=$OUT/checkpoints/last/pretrained_model
 [ -d "$SRC" ] || die "training ended without $SRC"
 DEST=$POLICY_DIR/$RUN
-rm -rf "$DEST.tmp"
-cp -RL "$SRC" "$DEST.tmp"
-rm -rf "$DEST"
-mv "$DEST.tmp" "$DEST"
-echo "=== done: trained policy in $DEST ==="
+rm -rf "$DEST.tmp" "$DEST"                   # a link from an earlier run is removed, not followed
+if [ "${POLICY_COPY:-0}" = 1 ]; then          # a copy outlives outputs/, at the cost of the model's size again
+    cp -RL "$SRC" "$DEST.tmp"
+    mv "$DEST.tmp" "$DEST"
+    echo "=== done: trained policy copied to $DEST ==="
+else                                          # a link to the real step folder (checkpoints/last moves on resume)
+    ln -s "$(cd "$SRC" && pwd -P)" "$DEST"
+    echo "=== done: $DEST -> $(cd "$SRC" && pwd -P) (deleting $OUT breaks this link) ==="
+fi
 echo "Serve it: POLICY=$DEST sbatch $PROJECT_DIR/slurm/serve_policy.sbatch   (or set POLICY in .env)"

@@ -107,8 +107,10 @@ def test_training_jobs_build_argv_lerobot_accepts(
     run = f"{policy_type}_{'lora' if lora else 'full'}_pick_cube"
     assert f"--output_dir={project}/outputs/{run}" in argv
     assert f"--dataset.root={tmp}/data/pick_cube" in argv
-    # The finished policy is published for serve_policy.sbatch.
-    assert (project / "policies" / run / "config.json").is_file()
+    # The finished policy is published for serve_policy.sbatch: a link to the real step folder.
+    published = project / "policies" / run
+    assert published.is_symlink() and (published / "config.json").is_file()
+    assert published.resolve() == (project / "outputs" / run / "checkpoints" / "000010" / "pretrained_model")
 
     shutil.rmtree(project / "outputs")  # validate() refuses an existing output_dir on a new run
     monkeypatch.setattr(sys, "argv", ["lerobot-train", *argv])
@@ -202,3 +204,19 @@ def test_trackio_settings(project: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert _run(project, "train_act.sbatch", DATASET="pick_cube").returncode == 0
     argv = json.loads((project / "argv.json").read_text())
     assert "--resume=true" in argv and "--trackio.enable=true" in argv
+
+
+def test_policy_copy_keeps_the_model_after_its_run_is_deleted(project: Path) -> None:
+    published = project / "policies" / "act_full_pick_cube"
+    (project / "lelab_policy_server.py").write_text("import sys\n")
+
+    assert _run(project, "train_act.sbatch", DATASET="pick_cube").returncode == 0
+    shutil.rmtree(project / "outputs")
+    result = _run(project, "serve_policy.sbatch", POLICY="policies/act_full_pick_cube")
+    assert result.returncode == 1 and "no longer exists" in result.stderr
+
+    assert _run(project, "train_act.sbatch", DATASET="pick_cube", POLICY_COPY="1").returncode == 0
+    assert not published.is_symlink()
+    shutil.rmtree(project / "outputs")
+    assert (published / "config.json").is_file()
+    assert _run(project, "serve_policy.sbatch", POLICY="policies/act_full_pick_cube").returncode == 0
