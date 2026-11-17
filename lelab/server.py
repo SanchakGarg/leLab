@@ -25,8 +25,9 @@ import threading
 import time
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -91,16 +92,20 @@ from .utils import config
 from .utils.config import (
     FOLLOWER_CONFIG_PATH,
     LEADER_CONFIG_PATH,
+    delete_remote_server,
     delete_robot_record,
     detect_port_after_disconnect,
     find_available_ports,
     find_robot_port,
     get_default_robot_port,
+    get_remote_server,
     get_robot_record,
     get_saved_robot_port,
     is_robot_record_clean,
     is_valid_robot_name,
+    list_remote_servers,
     list_robot_records,
+    save_remote_server,
     save_robot_port,
     save_robot_record,
 )
@@ -1455,6 +1460,73 @@ def delete_camera_reference(name: str, camera: str):
     if not deleted:
         return JSONResponse(status_code=404, content={"status": "error", "message": "No reference saved"})
     return {"status": "success"}
+
+
+# ============================================================================
+# REMOTE SERVER ENDPOINTS
+# ============================================================================
+
+# The LeLab Space serves the same frontend from Hugging Face and talks to this
+# local API, so it is trusted alongside this machine's own pages.
+_TRUSTED_REMOTE_ORIGINS = {"https://lerobot-lelab.hf.space"}
+
+
+def _require_trusted_origin(request: Request) -> None:
+    """Refuse cross-site calls to the remote-server routes.
+
+    These routes log into the user's server and can drive the arm, while CORS
+    lets any page in the browser call this API. Requests without an Origin
+    (curl, same-origin GETs) and requests from this machine's own pages, the
+    page's own host or the LeLab Space pass; every other page gets a 403.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+    parsed = urlsplit(origin)
+    if (parsed.hostname or "").lower() in ("localhost", "127.0.0.1", "::1"):
+        return
+    if origin.rstrip("/") in _TRUSTED_REMOTE_ORIGINS:
+        return
+    if parsed.netloc and parsed.netloc == request.headers.get("host"):
+        return
+    raise HTTPException(status_code=403, detail=f"Remote-server requests from {origin} are not allowed")
+
+
+# Every remote-server route carries this dependency.
+REMOTE_GUARD = [Depends(_require_trusted_origin)]
+
+
+class RemoteServerBody(BaseModel):
+    """A remote server profile. Unknown fields (a password, say) are ignored, so they are never saved."""
+
+    host: str
+    port: int | str = 22
+    username: str
+    auth: Literal["password", "key", "agent"] = "password"
+    key_path: str = ""
+    remote_dataset_dir: str = ""
+    remote_work_dir: str = ""
+
+
+@app.get("/remote-servers", dependencies=REMOTE_GUARD)
+def remote_servers_list():
+    return {"servers": list_remote_servers()}
+
+
+@app.put("/remote-servers/{name}", dependencies=REMOTE_GUARD)
+def remote_server_save(name: str, body: RemoteServerBody):
+    try:
+        return save_remote_server(name, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/remote-servers/{name}", dependencies=REMOTE_GUARD)
+def remote_server_delete(name: str):
+    if get_remote_server(name) is None:
+        raise HTTPException(status_code=404, detail=f"No saved server named {name!r}")
+    delete_remote_server(name)
+    return {"success": True}
 
 
 @app.on_event("startup")

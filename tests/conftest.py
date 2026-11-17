@@ -70,6 +70,8 @@ def tmp_lerobot_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(cfg, "CONFIG_STORAGE_PATH", str(saved_dir))
     monkeypatch.setattr(cfg, "LEADER_CONFIG_FILE", str(saved_dir / "leader_config.txt"))
     monkeypatch.setattr(cfg, "FOLLOWER_CONFIG_FILE", str(saved_dir / "follower_config.txt"))
+    monkeypatch.setattr(cfg, "REMOTE_SERVERS_PATH", str(cache / "remote_servers"))
+    monkeypatch.setattr(cfg, "REMOTE_KNOWN_HOSTS_PATH", str(cache / "remote_known_hosts"))
 
     return cache
 

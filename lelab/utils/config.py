@@ -47,6 +47,12 @@ ROBOTS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/robots")
 # Saved camera reference frames, one PNG per robot/camera (see lelab/camera_reference.py)
 CAMERA_REFERENCES_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/camera_references")
 
+# Remote (SSH) servers: one JSON profile per server. Profiles never hold a
+# password; see lelab/remote_ssh.py. Host keys the user confirmed in the UI go
+# to LeLab's own known_hosts file, next to the profiles.
+REMOTE_SERVERS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/remote_servers")
+REMOTE_KNOWN_HOSTS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/remote_known_hosts")
+
 # Tag stamped on every dataset pushed to the Hub from LeLab, so we can later
 # query the Hub for LeLab-produced datasets and compute usage metrics.
 LELAB_TAG = "LeLab"
@@ -451,3 +457,119 @@ def is_robot_record_clean(record: dict) -> bool:
     leader_path = os.path.join(LEADER_CONFIG_PATH, record["leader_config"])
     follower_path = os.path.join(FOLLOWER_CONFIG_PATH, record["follower_config"])
     return os.path.exists(leader_path) and os.path.exists(follower_path)
+
+
+# ---------------------------------------------------------------------------
+# Remote server profiles
+# ---------------------------------------------------------------------------
+
+REMOTE_AUTH_METHODS = ("password", "key", "agent")
+# The only fields written to disk. Anything else in a request, a password in
+# particular, is dropped here.
+_REMOTE_STRING_FIELDS = ("host", "username", "auth", "key_path", "remote_dataset_dir", "remote_work_dir")
+
+
+def _remote_server_path(name: str) -> str:
+    return os.path.join(REMOTE_SERVERS_PATH, f"{name}.json")
+
+
+def _empty_remote_server(name: str) -> dict:
+    return {
+        "name": name,
+        "host": "",
+        "port": 22,
+        "username": "",
+        "auth": "password",
+        "key_path": "",
+        "remote_dataset_dir": "",
+        "remote_work_dir": "",
+    }
+
+
+def _validate_remote_server(record: dict) -> None:
+    """Raise ValueError when a profile can't be used to open an SSH session."""
+    host = record["host"]
+    if not host or any(c.isspace() for c in host) or host.startswith("-"):
+        raise ValueError("Enter the server's IP address or host name.")
+    username = record["username"]
+    if not username or any(c.isspace() for c in username) or username.startswith("-"):
+        raise ValueError("Enter the user name you log in with.")
+    port = record["port"]
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("The SSH port must be a number from 1 to 65535.")
+    if record["auth"] not in REMOTE_AUTH_METHODS:
+        raise ValueError(f"auth must be one of {', '.join(REMOTE_AUTH_METHODS)}.")
+    if record["auth"] == "key" and not record["key_path"].strip():
+        raise ValueError("Choose the private key file to log in with.")
+
+
+def get_remote_server(name: str) -> dict | None:
+    """Return the saved remote server profile, or None if missing."""
+    if not is_valid_robot_name(name):
+        return None
+    path = _remote_server_path(name)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.error(f"Failed to read remote server {name}: {e}")
+        return None
+    record = _empty_remote_server(name)
+    record.update({k: v for k, v in data.items() if k in record})
+    record["name"] = name
+    return record
+
+
+def list_remote_servers() -> list[dict]:
+    """Return all saved remote server profiles, sorted by name."""
+    if not os.path.isdir(REMOTE_SERVERS_PATH):
+        return []
+    records = []
+    for filename in sorted(os.listdir(REMOTE_SERVERS_PATH)):
+        if not filename.endswith(".json"):
+            continue
+        record = get_remote_server(os.path.splitext(filename)[0])
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def save_remote_server(name: str, data: dict) -> dict:
+    """Create or update a remote server profile and return what was saved.
+
+    Merges `data` into the existing profile. Only the known fields are kept, so
+    a password sent along by mistake never reaches the disk. Raises ValueError
+    for an invalid name or profile.
+    """
+    if not is_valid_robot_name(name):
+        raise ValueError(f"Invalid server name: {name!r}")
+    record = get_remote_server(name) or _empty_remote_server(name)
+    for field in _REMOTE_STRING_FIELDS:
+        value = data.get(field)
+        if isinstance(value, str):
+            record[field] = value.strip()
+    if "port" in data:
+        port = data["port"]
+        if isinstance(port, str) and port.strip().isdigit():
+            port = int(port.strip())
+        record["port"] = port
+    record["name"] = name
+    _validate_remote_server(record)
+
+    _atomic_write_text(_remote_server_path(name), json.dumps(record, indent=2))
+    logger.info(f"Saved remote server {name}: {record['username']}@{record['host']}:{record['port']}")
+    return record
+
+
+def delete_remote_server(name: str) -> bool:
+    """Delete a remote server profile. Returns True if a file was removed."""
+    if not is_valid_robot_name(name):
+        return False
+    path = _remote_server_path(name)
+    if not os.path.exists(path):
+        return False
+    os.remove(path)
+    logger.info(f"Deleted remote server {name}")
+    return True

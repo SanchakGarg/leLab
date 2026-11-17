@@ -43,6 +43,8 @@ REQUIRED_PATHS = {
     "/available-cameras",
     "/hf-auth-status",
     "/ws/joint-data",
+    "/remote-servers",
+    "/remote-servers/{name}",
 }
 
 
