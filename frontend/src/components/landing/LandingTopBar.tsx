@@ -1,5 +1,6 @@
 import React from "react";
 import HfAuthChip from "./HfAuthChip";
+import RemoteServerChip from "@/components/remote/RemoteServerChip";
 import TourLauncher from "@/components/onboarding/TourLauncher";
 
 const LandingTopBar: React.FC = () => {
@@ -18,6 +19,7 @@ const LandingTopBar: React.FC = () => {
         </div>
         <div className="flex items-center gap-2">
           <TourLauncher variant="inline" />
+          <RemoteServerChip />
           <HfAuthChip />
         </div>
       </div>

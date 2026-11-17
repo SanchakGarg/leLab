@@ -20,6 +20,7 @@ import UpdateNotice from "@/components/UpdateNotice";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { ApiProvider } from "./contexts/ApiContext";
 import { HfAuthProvider } from "./contexts/HfAuthContext";
+import { RemoteServerProvider } from "./contexts/RemoteServerContext";
 import { OnboardingProvider } from "./contexts/OnboardingContext";
 
 const queryClient = new QueryClient();
@@ -31,6 +32,7 @@ function App() {
         <ThemeProvider>
           <ApiProvider>
             <HfAuthProvider>
+              <RemoteServerProvider>
               <UrdfProvider>
                 <DragAndDropProvider>
                   <BrowserRouter>
@@ -57,6 +59,7 @@ function App() {
                   </BrowserRouter>
                 </DragAndDropProvider>
               </UrdfProvider>
+              </RemoteServerProvider>
             </HfAuthProvider>
           </ApiProvider>
         </ThemeProvider>

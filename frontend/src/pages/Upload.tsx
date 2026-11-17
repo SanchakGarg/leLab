@@ -17,10 +17,12 @@ import {
   AlertCircle,
   Loader2,
   Trash2,
+  Send,
 } from "lucide-react";
 import { useApi } from "@/contexts/ApiContext";
 import { DatasetSource } from "@/lib/replayApi";
 import DeleteDatasetDialog from "@/components/dataset/DeleteDatasetDialog";
+import SendToServerDialog from "@/components/remote/SendToServerDialog";
 
 interface DatasetInfo {
   dataset_repo_id: string;
@@ -62,6 +64,7 @@ const Upload = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
 
   // Load actual dataset information from backend
   React.useEffect(() => {
@@ -416,6 +419,14 @@ const Upload = () => {
 
             {/* Action Buttons */}
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
+              <Button
+                onClick={() => setSendOpen(true)}
+                disabled={isUploading}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-4 px-8 text-lg"
+              >
+                <Send className="w-5 h-5 mr-2" />
+                Send to server
+              </Button>
               {isAlreadyOnHub ? (
                 <Button
                   onClick={() => openInHubViewer(datasetInfo.dataset_repo_id)}
@@ -490,6 +501,14 @@ const Upload = () => {
           </>
         )}
       </div>
+
+      {sendOpen ? (
+        <SendToServerDialog
+          open={sendOpen}
+          onOpenChange={setSendOpen}
+          datasetRepoId={datasetInfo.dataset_repo_id}
+        />
+      ) : null}
 
       <DeleteDatasetDialog
         repoId={datasetInfo.dataset_repo_id}

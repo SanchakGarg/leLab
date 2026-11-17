@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Loader2,
   Merge,
+  Send,
   SquareArrowOutUpRight,
   Trash2,
   Upload,
@@ -22,6 +23,7 @@ import MergeDatasetsDialog from "@/components/dataset/MergeDatasetsDialog";
 import MoveEpisodesDialog from "@/components/dataset/MoveEpisodesDialog";
 import DatasetPicker from "@/components/landing/DatasetPicker";
 import RecordingModal from "@/components/landing/RecordingModal";
+import SendToServerDialog from "@/components/remote/SendToServerDialog";
 import { useApi } from "@/contexts/ApiContext";
 import { useDatasets } from "@/hooks/useDatasets";
 import { useEpisodeDetail, useEpisodes } from "@/hooks/useEpisodes";
@@ -59,6 +61,7 @@ const EditDataset = () => {
   const [mergeOpen, setMergeOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
   const [taskOpen, setTaskOpen] = useState(false);
   // A Hub-only dataset has no videos on disk to decode.
   const localDatasets = useMemo(
@@ -295,6 +298,17 @@ const EditDataset = () => {
             {repoId && selectedIsLocal && (
               <Button
                 variant="outline"
+                size="sm"
+                onClick={() => setSendOpen(true)}
+                className="h-9 gap-1.5 border-gray-800 bg-gray-950 text-xs text-gray-300 hover:bg-gray-900"
+              >
+                <Send className="h-3.5 w-3.5" />
+                Send to server
+              </Button>
+            )}
+            {repoId && selectedIsLocal && (
+              <Button
+                variant="outline"
                 size="icon"
                 onClick={() => setDeleteOpen(true)}
                 aria-label="Delete dataset from disk"
@@ -387,6 +401,10 @@ const EditDataset = () => {
           </>
         )}
       </div>
+
+      {repoId && selectedIsLocal && sendOpen && (
+        <SendToServerDialog open={sendOpen} onOpenChange={setSendOpen} datasetRepoId={repoId} />
+      )}
 
       {repoId && selectedIsLocal && (
         <MergeDatasetsDialog

@@ -6,11 +6,19 @@ export type Fetcher = (
 export class ApiError extends Error {
   status: number;
   detail: string | null;
-  constructor(message: string, status: number, detail: string | null) {
+  /** FastAPI's `detail` as sent, when it is an object (e.g. `{message, code, ...}`). */
+  data: Record<string, unknown> | null;
+  constructor(
+    message: string,
+    status: number,
+    detail: string | null,
+    data: Record<string, unknown> | null = null
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.detail = detail;
+    this.data = data;
   }
 }
 
@@ -40,9 +48,17 @@ export async function apiRequest<T = unknown>(
   const r = await fetcher(url, init);
   if (!r.ok) {
     let detail: string | null = null;
+    let data: Record<string, unknown> | null = null;
     try {
       const errBody = await r.json();
-      detail = errBody?.detail ?? errBody?.message ?? null;
+      const raw = errBody?.detail ?? errBody?.message ?? null;
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        // Structured error: keep it, and use its message as the text.
+        data = raw as Record<string, unknown>;
+        detail = typeof data.message === "string" ? data.message : JSON.stringify(raw);
+      } else {
+        detail = raw;
+      }
     } catch {
       // body wasn't JSON
     }
@@ -50,7 +66,8 @@ export async function apiRequest<T = unknown>(
     throw new ApiError(
       `${label} failed: ${detail ?? r.status}`,
       r.status,
-      detail
+      detail,
+      data
     );
   }
   // 204 No Content
