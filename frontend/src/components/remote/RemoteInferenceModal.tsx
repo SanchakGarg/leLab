@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, CheckCircle, ChevronDown, Loader2, Play, PlugZap, Server } from "lucide-react";
+import { AlertTriangle, CheckCircle, ChevronDown, Loader2, Play, PlugZap, Server, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NumberInput } from "@/components/ui/number-input";
@@ -28,6 +29,7 @@ import { useCameraBindings } from "@/hooks/useCameraBindings";
 import { useToast } from "@/hooks/use-toast";
 import { RobotRecord } from "@/hooks/useRobots";
 import { cameraConfigurationError } from "@/lib/cameraConfig";
+import { defaultVideoLayout } from "@/lib/runVideo";
 import {
   PolicyConnectionKind,
   PolicyHello,
@@ -46,6 +48,16 @@ interface Props {
 }
 
 const LAST_KEY = "lelab.remotePolicy";
+const VIDEO_KEY = "lelab.recordRunVideo";
+const NO_CORNER = "__none__";
+
+const readRecordVideo = () => {
+  try {
+    return window.localStorage.getItem(VIDEO_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
 
 interface LastTarget {
   connection: PolicyConnectionKind;
@@ -87,6 +99,9 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
   const [prefetch, setPrefetch] = useState(10);
   const [submitting, setSubmitting] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [recordVideo, setRecordVideo] = useState(readRecordVideo);
+  // The user's own pick of cameras for the video; null: the default layout.
+  const [videoChoice, setVideoChoice] = useState<{ main: string; corner: string | null } | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -97,6 +112,7 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
     setHello(null);
     setProbeError(null);
     setSubmitting(false);
+    setVideoChoice(null);
   }, [open]);
 
   const imageFeatures = useMemo(
@@ -105,6 +121,26 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
   );
   const cameraBindings = useCameraBindings(imageFeatures, robot, open && !!hello);
   const cameraError = robot ? cameraConfigurationError(robot.cameras ?? []) : null;
+  const policyCameras = hello?.cameras ?? [];
+  const boundName = (camera: string) => {
+    const index = cameraBindings.bindings[camera];
+    return index == null ? null : robot?.cameras?.find((c) => c.camera_index === index)?.name;
+  };
+  const videoDefaults = defaultVideoLayout(policyCameras, boundName);
+  const videoMain = videoChoice?.main ?? videoDefaults.main;
+  const videoCorner = videoChoice ? videoChoice.corner : videoDefaults.corner;
+  const cameraLabel = (camera: string) => {
+    const bound = boundName(camera);
+    return bound && bound !== camera ? `${camera} (${bound})` : camera;
+  };
+  const toggleRecordVideo = (value: boolean) => {
+    setRecordVideo(value);
+    try {
+      window.localStorage.setItem(VIDEO_KEY, value ? "1" : "0");
+    } catch {
+      // storage unavailable
+    }
+  };
   const tunnel = connection === "tunnel";
   const serverReady = !tunnel || !!selected?.session.connected;
   const target = {
@@ -154,6 +190,9 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
         n_action_steps: nActionSteps ?? null,
         prefetch,
         max_relative_target: maxStep ?? null,
+        record_video: recordVideo && !!videoMain,
+        video_camera: recordVideo ? videoMain : null,
+        video_corner_camera: recordVideo ? videoCorner : null,
       });
       onOpenChange(false);
       navigate("/inference");
@@ -357,6 +396,77 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
                       }}
                       className="bg-gray-800 border-gray-700 text-white"
                     />
+                  </div>
+                  <div className="space-y-3 rounded-md border border-gray-800 p-3">
+                    <div className="flex items-start gap-3">
+                      <Checkbox
+                        id="remote-record-video"
+                        checked={recordVideo && policyCameras.length > 0}
+                        disabled={policyCameras.length === 0}
+                        onCheckedChange={(value) => toggleRecordVideo(value === true)}
+                        className="mt-0.5 border-gray-500 data-[state=checked]:bg-emerald-500 data-[state=checked]:border-emerald-500"
+                      />
+                      <div className="space-y-1">
+                        <Label htmlFor="remote-record-video" className="flex items-center gap-1.5 text-sm font-medium text-gray-200 cursor-pointer">
+                          <Video className="h-4 w-4" />
+                          Record a video of the run
+                        </Label>
+                        <p className="text-xs text-gray-500">
+                          {policyCameras.length === 0
+                            ? "This model uses no camera, so there is nothing to record."
+                            : recordVideo && videoDefaults.obvious && videoMain
+                              ? `${cameraLabel(videoMain)} full frame${videoCorner ? `, ${cameraLabel(videoCorner)} in the corner` : ""}. Saved on this computer; you can watch it when the run ends.`
+                              : "Saved on this computer as an mp4; you can watch it when the run ends."}
+                        </p>
+                      </div>
+                    </div>
+                    {recordVideo && policyCameras.length > 0 && !videoDefaults.obvious ? (
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-gray-400">Full view</Label>
+                          <Select
+                            value={videoMain ?? ""}
+                            onValueChange={(main) =>
+                              setVideoChoice({ main, corner: videoCorner === main ? null : videoCorner })
+                            }
+                          >
+                            <SelectTrigger aria-label="Full view camera" className="bg-gray-800 border-gray-700 text-white">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="bg-gray-900 border-gray-700 text-white">
+                              {policyCameras.map((camera) => (
+                                <SelectItem key={camera} value={camera}>
+                                  {cameraLabel(camera)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-gray-400">In the corner</Label>
+                          <Select
+                            value={videoCorner ?? NO_CORNER}
+                            onValueChange={(corner) =>
+                              setVideoChoice({ main: videoMain ?? policyCameras[0], corner: corner === NO_CORNER ? null : corner })
+                            }
+                          >
+                            <SelectTrigger aria-label="Corner camera" className="bg-gray-800 border-gray-700 text-white">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="bg-gray-900 border-gray-700 text-white">
+                              <SelectItem value={NO_CORNER}>None</SelectItem>
+                              {policyCameras
+                                .filter((camera) => camera !== videoMain)
+                                .map((camera) => (
+                                  <SelectItem key={camera} value={camera}>
+                                    {cameraLabel(camera)}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                   <Collapsible className="group space-y-3">
                     <CollapsibleTrigger className="flex w-full items-center justify-between text-sm font-medium text-gray-300">

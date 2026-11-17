@@ -104,3 +104,69 @@ test("connects to the model, sizes the cameras from it, and starts the arm with 
   });
   expect(mocks.navigate).toHaveBeenCalledWith("/inference");
 });
+
+const renderAndConnect = async () => {
+  await act(async () =>
+    root.render(
+      <RemoteServerProvider>
+        <RemoteInferenceModal open onOpenChange={vi.fn()} robot={robot} />
+      </RemoteServerProvider>,
+    ),
+  );
+  type(container.querySelector<HTMLInputElement>("#policy-host")!, "10.2.0.7");
+  await click(button(container, "Connect to the model"));
+};
+
+test("records a video with the wrist camera in the corner", async () => {
+  await renderAndConnect();
+  act(() => {
+    const wrist = cameraSelects()[1];
+    wrist.value = "2";
+    wrist.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await click(container.querySelector<HTMLButtonElement>("#remote-record-video")!);
+  expect(container.textContent).toContain("front full frame, wrist in the corner");
+  // Two cameras, one of them the wrist camera: nothing to choose.
+  expect(container.textContent).not.toContain("In the corner");
+  expect(window.localStorage.getItem("lelab.recordRunVideo")).toBe("1");
+
+  vi.useFakeTimers();
+  await act(async () => {
+    button(container, "Start").click();
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  expect(calls.find((c) => c.path === "/start-remote-inference")!.body).toMatchObject({
+    record_video: true, video_camera: "front", video_corner_camera: "wrist",
+  });
+});
+
+test("asks which cameras go in the video when there are more than two", async () => {
+  window.localStorage.setItem("lelab.recordRunVideo", "1");
+  const three = { ...HELLO, cameras: ["top", "side", "wrist"], image_shapes: { top: [480, 640, 3], side: [480, 640, 3], wrist: [240, 320, 3] } };
+  mocks.fetcher.mockImplementation(async (url: string, init: RequestInit = {}) => {
+    const path = url.replace("http://test", "");
+    calls.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
+    if (path === "/remote-servers") return json({ servers: [SERVER] });
+    if (path === "/remote-policy/probe") return json(three);
+    return json({}, 404);
+  });
+  await renderAndConnect();
+
+  expect(container.textContent).toContain("Full view");
+  expect(container.textContent).toContain("In the corner");
+  const videoSelects = () =>
+    Array.from(container.querySelectorAll("select")).filter((s) =>
+      Array.from(s.options).some((o) => ["top", "__none__"].includes(o.value)),
+    );
+  // Defaults: the first other camera full frame, the wrist camera in the corner.
+  expect(videoSelects().map((s) => s.value)).toEqual(["top", "wrist"]);
+
+  act(() => {
+    const corner = videoSelects()[1];
+    corner.value = "__none__";
+    corner.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(videoSelects().map((s) => s.value)).toEqual(["top", "__none__"]);
+  // The full-frame camera is never offered for the corner too.
+  expect(Array.from(videoSelects()[1].options).map((o) => o.value)).not.toContain("top");
+});

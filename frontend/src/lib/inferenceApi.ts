@@ -31,6 +31,20 @@ export interface InferenceStatus {
   returned_to_start?: boolean | null;
   /** The follower's USB link failing now, or for a while recently (remote runs). */
   arm_link_issues?: ArmLinkIssue[];
+  /** The run's video, when it records one (remote runs). */
+  video?: RunVideoInfo | null;
+}
+
+export interface RunVideoInfo {
+  recording: boolean;
+  /** Set once the file is saved: fetch it from /run-videos/{name}. */
+  name: string | null;
+  path: string | null;
+  camera: string;
+  corner_camera: string | null;
+  frames: number;
+  dropped: number;
+  error: string | null;
 }
 
 export interface RemoteRunStats {

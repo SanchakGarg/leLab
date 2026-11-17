@@ -51,6 +51,7 @@ REQUIRED_PATHS = {
     "/remote-servers/{name}/install-policy-server",
     "/remote-policy/probe",
     "/start-remote-inference",
+    "/run-videos/{name}",
     "/remote-upload",
     "/remote-upload/status",
     "/remote-upload/cancel",

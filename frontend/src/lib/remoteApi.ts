@@ -212,6 +212,10 @@ export interface StartRemoteInferenceRequest extends PolicyConnection {
   n_action_steps?: number | null;
   prefetch?: number;
   max_relative_target?: number | null;
+  /** Record a video: `video_camera` full frame, `video_corner_camera` inset in a corner (policy camera names). */
+  record_video?: boolean;
+  video_camera?: string | null;
+  video_corner_camera?: string | null;
 }
 
 export async function startRemoteInference(

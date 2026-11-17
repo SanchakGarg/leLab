@@ -45,6 +45,7 @@ from . import (
     remote_policy,
     remote_ssh,
     remote_upload,
+    run_video,
 )
 
 # Import our custom calibration functionality
@@ -1576,6 +1577,15 @@ def remote_server_install_policy_server(name: str, request: remote_upload.Instal
 def remote_policy_probe(request: remote_policy.PolicyConnection):
     """Connect to a policy server (through the server's SSH session or directly) and return its hello."""
     return _remote_call(remote_policy.probe, request)
+
+
+@app.get("/run-videos/{name}", dependencies=REMOTE_GUARD)
+def get_run_video(name: str):
+    """A saved video of a model run (Range requests work, so the page can seek in it)."""
+    path = run_video.resolve_video(name, config.RUN_VIDEOS_PATH)
+    if path is None:
+        raise HTTPException(status_code=404, detail="No such video")
+    return FileResponse(path, media_type="video/mp4", filename=name, content_disposition_type="inline")
 
 
 @app.post("/start-remote-inference", dependencies=REMOTE_GUARD)

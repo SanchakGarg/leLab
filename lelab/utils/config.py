@@ -52,6 +52,8 @@ CAMERA_REFERENCES_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/camera
 # to LeLab's own known_hosts file, next to the profiles.
 REMOTE_SERVERS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/remote_servers")
 REMOTE_KNOWN_HOSTS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/remote_known_hosts")
+# Videos of model runs on the arm (remote inference with "Record a video").
+RUN_VIDEOS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/run_videos")
 
 # Tag stamped on every dataset pushed to the Hub from LeLab, so we can later
 # query the Hub for LeLab-produced datasets and compute usage metrics.

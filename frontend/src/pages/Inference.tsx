@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Loader2, Square } from "lucide-react";
+import { ArrowLeft, Download, Loader2, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Logo from "@/components/Logo";
 import ArmLinkNotice from "@/components/control/ArmLinkNotice";
+import { runVideoUrl } from "@/lib/runVideo";
 import { useApi } from "@/contexts/ApiContext";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -37,6 +38,8 @@ const Inference: React.FC = () => {
   const { toast } = useToast();
   const [status, setStatus] = useState<InferenceStatus | null>(null);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
+  // A finished run that saved a video: stay here to show it instead of going home.
+  const [finished, setFinished] = useState<InferenceStatus | null>(null);
   const navigatedAwayRef = useRef(false);
   // Independent flag: we may request a stop (safety net) before the run
   // is actually inactive. We must not flip navigatedAwayRef yet — that
@@ -55,20 +58,27 @@ const Inference: React.FC = () => {
     const tick = async () => {
       try {
         const next = await getInferenceStatus(baseUrl, fetchWithHeaders);
-        if (cancelled) return;
+        if (cancelled || navigatedAwayRef.current) return;
         setStatus(next);
         // Auto-bounce home once the run is done.
         if (!next.inference_active && !navigatedAwayRef.current) {
           navigatedAwayRef.current = true;
           if (next.exited) {
             const failed = next.exit_code !== 0;
+            const videoError = next.video?.error ? ` The video could not be saved: ${next.video.error}` : "";
             toast({
               title: failed ? "Inference stopped with an error" : "Inference finished",
-              description: !failed
-                ? "Run completed."
-                : next.hint || next.error || (next.log_path ? `Exit code ${next.exit_code}. See ${next.log_path}.` : `Exit code ${next.exit_code}.`),
+              description:
+                (!failed
+                  ? "Run completed."
+                  : next.hint || next.error || (next.log_path ? `Exit code ${next.exit_code}. See ${next.log_path}.` : `Exit code ${next.exit_code}.`)) +
+                videoError,
               variant: failed ? "destructive" : "default",
             });
+          }
+          if (next.video?.name) {
+            setFinished(next);
+            return;
           }
           navigate("/");
           return;
@@ -126,6 +136,40 @@ const Inference: React.FC = () => {
       });
     }
   };
+
+  if (finished?.video?.name) {
+    const video = finished.video;
+    const url = runVideoUrl(baseUrl, video.name!);
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center gap-5 p-4 sm:p-6 lg:p-8">
+        <div className="w-full max-w-3xl space-y-4 rounded-lg border border-gray-700 bg-gray-900 p-6">
+          <div className="flex items-center justify-between gap-4">
+            <h1 className="text-xl font-bold">Run video</h1>
+            <span className="text-xs text-gray-500">
+              {finished.policy_ref ?? ""}
+            </span>
+          </div>
+          <video src={url} controls autoPlay muted playsInline className="w-full rounded-md bg-black" />
+          <p className="text-xs text-gray-500 break-all">
+            {video.camera}
+            {video.corner_camera ? `, ${video.corner_camera} in the corner` : ""} · {video.frames} frames
+            {video.dropped ? ` (${video.dropped} dropped)` : ""} · saved at {video.path}
+          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+            <Button asChild variant="outline" className="border-gray-600 bg-gray-950 text-gray-200 hover:bg-gray-800">
+              <a href={url} download={video.name ?? undefined}>
+                <Download className="mr-2 h-4 w-4" />
+                Download
+              </a>
+            </Button>
+            <Button onClick={() => navigate("/")} className="bg-white text-black hover:bg-gray-200">
+              Back to home
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!status) {
     return (

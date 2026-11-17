@@ -43,6 +43,7 @@ import socket
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
@@ -52,6 +53,8 @@ from . import remote_ssh
 from .camera_config import validate_camera_rotations
 from .policy_server import encode_jpeg, recv_msg, send_msg
 from .remote_ssh import RemoteServerError
+from .run_video import RunVideo, default_layout, video_file_name
+from .utils import config
 from .utils.bus_guard import GUARD_ATTR, ArmCommunicationLostError, BusGuard, notable_outages
 from .utils.devices import safe_disconnect_device
 
@@ -110,6 +113,12 @@ class RemoteInferenceRequest(PolicyConnection):
     # How long to wait for a chunk once the run is going, and for the first one (warm-up, queues).
     chunk_timeout_s: float = Field(5.0, gt=0, le=120)
     first_chunk_timeout_s: float = Field(60.0, gt=0, le=600)
+    # Record a video of the run: `video_camera` full frame and `video_corner_camera` inset in
+    # a corner (policy camera names; None: no inset). Without `video_camera`, a wrist camera
+    # goes in the corner when there is one.
+    record_video: bool = False
+    video_camera: str | None = None
+    video_corner_camera: str | None = None
 
     @field_validator("cameras")
     @classmethod
@@ -386,6 +395,11 @@ class RemoteRun:
         self.error: str | None = None
         self.hint: str | None = None
         self.returned_to_start: bool | None = None
+        self.video: RunVideo | None = None
+        if request.record_video:
+            main, corner = video_layout(request)
+            path = Path(config.RUN_VIDEOS_PATH) / video_file_name(hello.get("name"))
+            self.video = RunVideo(path, self.fps, main, corner)
         # Glitch tolerance on the follower's bus, from start() to the release.
         self.guard: BusGuard | None = None
 
@@ -430,6 +444,8 @@ class RemoteRun:
                 self.phase = "running"
             self._send(action)
             self.steps += 1
+            if self.video is not None:
+                self.video.add(images)
             precise_sleep(period - (time.perf_counter() - tick))
 
     def run(self, initial: dict[str, float] | None) -> None:
@@ -459,6 +475,9 @@ class RemoteRun:
             if self.guard is not None:
                 self.guard.uninstall()
             safe_disconnect_device(self.robot, logger)
+            if self.video is not None:
+                self.phase = "saving the video"
+                self.video.close()
             self.phase = "stopped"
             self.finished = True
             from . import rollout
@@ -500,6 +519,7 @@ class RemoteRun:
                 **self.client.stats(),
                 "arm_skipped": self.guard.skipped if self.guard else 0,
             },
+            "video": self.video.info() if self.video is not None else None,
             "arm_link_issues": notable_outages([self.guard], since=time.time() - 5) if self.guard else [],
         }
 
@@ -515,6 +535,23 @@ class RemoteRun:
             "hint": self.hint or (_hint(self.error) if failed else None),
             "returned_to_start": self.returned_to_start,
         }
+
+
+def video_layout(request: RemoteInferenceRequest) -> tuple[str, str | None]:
+    """(full-frame camera, corner camera) for the run's video, checked against the run's cameras."""
+    names = list(request.cameras)
+    if not names:
+        raise RemoteServerError("This model uses no camera, so there is no video to record.", 400)
+    if request.video_camera:
+        main, corner = request.video_camera, request.video_corner_camera
+    else:
+        main, corner = default_layout(names)
+    for name in (main, corner):
+        if name is not None and name not in names:
+            raise RemoteServerError(
+                f"There is no camera {name!r} in this run to record (cameras: {', '.join(names)}).", 400
+            )
+    return main, (None if corner == main else corner)
 
 
 def _motors_respond(robot: Any) -> bool:
@@ -595,6 +632,8 @@ def handle_start_remote_inference(request: RemoteInferenceRequest) -> dict[str, 
                 f"each (got {', '.join(sorted(request.cameras)) or 'none'}).",
                 400,
             )
+        if request.record_video:
+            video_layout(request)
         for key in ("state_dim", "action_dim"):
             if hello.get(key) not in (None, 0, 6):
                 raise RemoteServerError(

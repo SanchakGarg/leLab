@@ -472,6 +472,25 @@ def test_a_silent_follower_stops_the_run_without_moving_it(policy_server, monkey
     assert robot.disconnected
 
 
+def test_a_run_can_record_a_video(policy_server, tmp_lerobot_home) -> None:
+    from pathlib import Path
+
+    from lelab import rollout
+
+    run, robot = _start_run(policy_server(), record_video=True)
+    _wait_for(lambda: run.steps >= 10)
+    assert rollout.handle_inference_status()["video"]["recording"] is True
+
+    assert rollout.handle_stop_inference()["success"] is True
+    video = rollout.handle_inference_status()["video"]
+    assert video["camera"] == "front"
+    assert video["corner_camera"] is None
+    assert video["error"] is None
+    assert Path(video["path"]).parent == tmp_lerobot_home / "run_videos"
+    assert Path(video["path"]).is_file()
+    assert video["name"].endswith("_fake_act.mp4")
+
+
 def test_a_slow_server_times_out(policy_server) -> None:
     from lelab import rollout
 
@@ -534,6 +553,33 @@ def test_start_needs_the_policy_cameras(policy_server) -> None:
     assert result["status_code"] == 400
     assert "front" in result["message"]
     assert rollout.inference_active is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"video_camera": "side"}, "no camera 'side'"),
+        ({"video_camera": "front", "video_corner_camera": "wrist"}, "no camera 'wrist'"),
+    ],
+)
+def test_start_checks_the_video_cameras(policy_server, overrides: dict, match: str) -> None:
+    from lelab import rollout
+    from lelab.remote_policy import handle_start_remote_inference
+
+    result = handle_start_remote_inference(_request(policy_server(), record_video=True, **overrides))
+    assert result["status_code"] == 400
+    assert match in result["message"]
+    assert rollout.inference_active is False
+
+
+def test_video_layout_defaults_to_the_wrist_camera_in_the_corner() -> None:
+    from lelab.remote_policy import video_layout
+
+    cams = {"wrist": {"type": "opencv", "camera_index": 1}, "front": {"type": "opencv", "camera_index": 0}}
+    assert video_layout(_request(5555, cameras=cams, record_video=True)) == ("front", "wrist")
+    assert video_layout(
+        _request(5555, cameras=cams, record_video=True, video_camera="wrist", video_corner_camera="wrist")
+    ) == ("wrist", None)
 
 
 def test_start_reports_an_unreachable_server() -> None:
