@@ -88,6 +88,8 @@ const Recording = () => {
 
   // Get recording config from navigation state
   const recordingConfig = location.state?.recordingConfig as RecordingConfig;
+  // Set when the recording modal asked to send the dataset to the remote server afterwards.
+  const sendToServer = location.state?.sendToServer === true;
 
   // Backend status state - this is the single source of truth
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(
@@ -275,7 +277,9 @@ const Recording = () => {
             saved_episodes: status.saved_episodes || 0,
             session_elapsed_seconds: status.session_elapsed_seconds || 0,
           };
-          navigate("/upload", { state: { datasetInfo } });
+          navigate("/upload", {
+            state: { datasetInfo, sendToServer },
+          });
         }
       } catch (error) {
         console.error("Error polling recording status:", error);
@@ -288,7 +292,7 @@ const Recording = () => {
     pollStatus();
     const statusInterval = setInterval(pollStatus, 1000);
     return () => clearInterval(statusInterval);
-  }, [recordingSessionStarted, recordingConfig, navigate, baseUrl, fetchWithHeaders, toast]);
+  }, [recordingSessionStarted, recordingConfig, navigate, baseUrl, fetchWithHeaders, toast, sendToServer]);
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);

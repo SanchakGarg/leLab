@@ -6,6 +6,17 @@ import { RobotRecord } from "@/hooks/useRobots";
 import { CameraConfig, cameraConfigurationError, serializeCameras } from "@/lib/cameraConfig";
 import { useCameraBindings } from "@/hooks/useCameraBindings";
 import { ImageFeatures } from "@/lib/checkpointsApi";
+import { useOptionalRemoteServers } from "@/contexts/RemoteServerContext";
+
+const SEND_AFTER_KEY = "lelab.sendToServerAfterRecording";
+
+const readSendAfter = (): boolean => {
+  try {
+    return window.localStorage.getItem(SEND_AFTER_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
 
 /** An existing local dataset that new episodes get appended to. */
 export interface AppendTarget {
@@ -34,6 +45,18 @@ export const useRecording = (robot: RobotRecord | null) => {
   const [resetTimeS, setResetTimeS] = useState(15);
   const [streamingEncoding, setStreamingEncoding] = useState(true);
   const [cameras, setCameras] = useState<CameraConfig[]>([]);
+  const remote = useOptionalRemoteServers();
+  const [sendToServer, setSendToServerState] = useState<boolean>(readSendAfter);
+  const setSendToServer = (value: boolean) => {
+    setSendToServerState(value);
+    try {
+      window.localStorage.setItem(SEND_AFTER_KEY, value ? "1" : "0");
+    } catch {
+      // storage unavailable: the choice lasts for this page only
+    }
+  };
+  // Only offered (and only acted on) when a server is saved.
+  const sendServer = remote?.selected ?? null;
 
   const releaseStreamsRef = useRef<(() => void) | null>(null);
   // Appending must feed every camera the dataset has, at its resolution, so
@@ -148,7 +171,9 @@ export const useRecording = (robot: RobotRecord | null) => {
     };
 
     setOpen(false);
-    navigate("/recording", { state: { recordingConfig } });
+    navigate("/recording", {
+      state: { recordingConfig, sendToServer: sendToServer && sendServer !== null },
+    });
   };
 
   return {
@@ -176,6 +201,9 @@ export const useRecording = (robot: RobotRecord | null) => {
       setCameras,
       onStart,
       releaseStreamsRef,
+      sendServerName: sendServer?.name ?? null,
+      sendToServer,
+      setSendToServer,
     },
   };
 };

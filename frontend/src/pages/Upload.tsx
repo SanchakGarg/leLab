@@ -64,7 +64,9 @@ const Upload = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [sendOpen, setSendOpen] = useState(false);
+  // Recording with "Send to server when done" lands here with sendToServer set.
+  const autoSend = location.state?.sendToServer === true;
+  const [sendOpen, setSendOpen] = useState(autoSend);
 
   // Load actual dataset information from backend
   React.useEffect(() => {
@@ -507,6 +509,7 @@ const Upload = () => {
           open={sendOpen}
           onOpenChange={setSendOpen}
           datasetRepoId={datasetInfo.dataset_repo_id}
+          autoStart={autoSend}
         />
       ) : null}
 

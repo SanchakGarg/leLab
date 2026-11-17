@@ -50,6 +50,10 @@ interface RecordingModalProps {
   setCameras: (cameras: CameraConfig[]) => void;
   onStart: () => void;
   releaseStreamsRef?: React.MutableRefObject<(() => void) | null>;
+  /** The saved remote server the dataset can go to after recording (null: none saved). */
+  sendServerName?: string | null;
+  sendToServer?: boolean;
+  setSendToServer?: (value: boolean) => void;
 }
 
 const RecordingModal: React.FC<RecordingModalProps> = ({
@@ -74,6 +78,9 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
   setCameras,
   onStart,
   releaseStreamsRef,
+  sendServerName = null,
+  sendToServer = false,
+  setSendToServer,
 }) => {
   const { auth } = useHfAuth();
 
@@ -292,6 +299,25 @@ const RecordingModal: React.FC<RecordingModalProps> = ({
                 </p>
               </div>
             )}
+
+            {sendServerName && setSendToServer ? (
+              <div className="flex items-start gap-3">
+                <Checkbox
+                  id="sendToServer"
+                  checked={sendToServer}
+                  onCheckedChange={(value) => setSendToServer(value === true)}
+                  className="mt-0.5 border-gray-500 data-[state=checked]:bg-emerald-500 data-[state=checked]:border-emerald-500"
+                />
+                <div className="space-y-1">
+                  <Label htmlFor="sendToServer" className="text-sm font-medium text-gray-200 cursor-pointer">
+                    Send to {sendServerName} when done
+                  </Label>
+                  <p className="text-xs text-gray-500">
+                    Copies the dataset to the server over SFTP after the last episode, to train on it there.
+                  </p>
+                </div>
+              </div>
+            ) : null}
 
             <Collapsible className="space-y-4 group">
               <CollapsibleTrigger className="flex items-center justify-between w-full text-lg font-semibold text-white border-b border-gray-700 pb-2">

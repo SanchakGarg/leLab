@@ -71,3 +71,6 @@ export const useRemoteServers = (): RemoteServerValue => {
   }
   return context;
 };
+
+/** The remote servers, or null outside a RemoteServerProvider (for components also used without one). */
+export const useOptionalRemoteServers = (): RemoteServerValue | null => useContext(RemoteServerContext) ?? null;
