@@ -48,6 +48,9 @@ REQUIRED_PATHS = {
     "/remote-servers/{name}/connect",
     "/remote-servers/{name}/disconnect",
     "/remote-servers/{name}/status",
+    "/remote-upload",
+    "/remote-upload/status",
+    "/remote-upload/cancel",
 }
 
 

@@ -38,7 +38,7 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 # Import our custom recording functionality
-from . import camera_reference, datasets as dataset_browser, record as _record, remote_ssh
+from . import camera_reference, datasets as dataset_browser, record as _record, remote_ssh, remote_upload
 
 # Import our custom calibration functionality
 from .calibrate import CalibrationRequest, calibration_manager
@@ -1559,6 +1559,22 @@ def remote_server_status(name: str):
     return _remote_call(remote_ssh.status, name)
 
 
+@app.post("/remote-upload", dependencies=REMOTE_GUARD)
+def remote_upload_start(request: remote_upload.RemoteUploadRequest):
+    """Copy a local dataset to a saved server over SFTP, in the background."""
+    return _remote_call(remote_upload.handle_start_upload, request)
+
+
+@app.get("/remote-upload/status", dependencies=REMOTE_GUARD)
+def remote_upload_status():
+    return remote_upload.handle_upload_status()
+
+
+@app.post("/remote-upload/cancel", dependencies=REMOTE_GUARD)
+def remote_upload_cancel():
+    return _remote_call(remote_upload.handle_cancel_upload)
+
+
 @app.on_event("startup")
 def startup_event():
     """One-time startup diagnostics surfaced in the server terminal."""
@@ -1571,6 +1587,7 @@ async def shutdown_event():
     logger.info("🔄 FastAPI shutting down, cleaning up...")
 
     _record.stop_recording_and_wait()
+    remote_upload.cancel_and_wait()
     remote_ssh.close_all()
 
     if manager:
