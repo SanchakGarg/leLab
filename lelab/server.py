@@ -38,7 +38,7 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 # Import our custom recording functionality
-from . import camera_reference, datasets as dataset_browser, record as _record
+from . import camera_reference, datasets as dataset_browser, record as _record, remote_ssh
 
 # Import our custom calibration functionality
 from .calibrate import CalibrationRequest, calibration_manager
@@ -1510,7 +1510,21 @@ class RemoteServerBody(BaseModel):
 
 @app.get("/remote-servers", dependencies=REMOTE_GUARD)
 def remote_servers_list():
-    return {"servers": list_remote_servers()}
+    sessions = remote_ssh.statuses()
+    return {
+        "servers": [
+            {**server, "session": sessions.get(server["name"], {"connected": False})}
+            for server in list_remote_servers()
+        ]
+    }
+
+
+def _remote_call(fn, *args, **kwargs):
+    """Run a remote-server handler, turning its RemoteServerError into the HTTP error it names."""
+    try:
+        return fn(*args, **kwargs)
+    except remote_ssh.RemoteServerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail()) from exc
 
 
 @app.put("/remote-servers/{name}", dependencies=REMOTE_GUARD)
@@ -1525,8 +1539,24 @@ def remote_server_save(name: str, body: RemoteServerBody):
 def remote_server_delete(name: str):
     if get_remote_server(name) is None:
         raise HTTPException(status_code=404, detail=f"No saved server named {name!r}")
+    _remote_call(remote_ssh.disconnect, name)
     delete_remote_server(name)
     return {"success": True}
+
+
+@app.post("/remote-servers/{name}/connect", dependencies=REMOTE_GUARD)
+def remote_server_connect(name: str, body: remote_ssh.ConnectRequest):
+    return _remote_call(remote_ssh.connect, name, body.password, body.trust_fingerprint)
+
+
+@app.post("/remote-servers/{name}/disconnect", dependencies=REMOTE_GUARD)
+def remote_server_disconnect(name: str):
+    return _remote_call(remote_ssh.disconnect, name)
+
+
+@app.get("/remote-servers/{name}/status", dependencies=REMOTE_GUARD)
+def remote_server_status(name: str):
+    return _remote_call(remote_ssh.status, name)
 
 
 @app.on_event("startup")
@@ -1541,6 +1571,7 @@ async def shutdown_event():
     logger.info("🔄 FastAPI shutting down, cleaning up...")
 
     _record.stop_recording_and_wait()
+    remote_ssh.close_all()
 
     if manager:
         manager.stop_broadcast_thread()

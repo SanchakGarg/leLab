@@ -45,6 +45,9 @@ REQUIRED_PATHS = {
     "/ws/joint-data",
     "/remote-servers",
     "/remote-servers/{name}",
+    "/remote-servers/{name}/connect",
+    "/remote-servers/{name}/disconnect",
+    "/remote-servers/{name}/status",
 }
 
 
