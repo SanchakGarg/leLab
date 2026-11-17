@@ -42,6 +42,10 @@ Run the Python tests with `pytest` (config in [pyproject.toml](pyproject.toml); 
 - [train.py](lelab/train.py) — wraps the LeRobot training CLI as a subprocess (psutil for lifecycle, queue for log streaming).
 - [datasets.py](lelab/datasets.py) — dataset listing (local cache + Hub, merged under a `source` field) plus the episode-browsing handlers behind `/dataset-episodes`, `/dataset-episode`, `/dataset-frame`, `/dataset-thumbnails`, `/dataset-motion` and `/dataset-video`.
 - [episode_media.py](lelab/episode_media.py) — reads the LeRobot v3.0 on-disk layout (`meta/episodes/*.parquet` + `videos/`) and decodes frames with PyAV. Deliberately does **not** go through `LeRobotDataset`, so browsing a dataset never builds a robot config or imports torch. Several episodes share one mp4, so locating an episode resolves both the file and the `from_/to_timestamp` window inside it — which is why `/dataset-video` is addressed by chunk/file rather than by episode. Call `ensure_episode_index(repo_id)` before opening a local dataset with `LeRobotDataset`: LeRobot writes the index only in `finalize()`, and without it reads the dataset as "not downloaded yet" and fetches it from the Hub, which 404s for a dataset that was never pushed.
+- [remote_ssh.py](lelab/remote_ssh.py) — in-memory paramiko sessions to the user's own servers (profiles saved by `utils/config.py`, never a password). Unknown host keys answer 409 with the fingerprint until the UI confirms it. Sessions carry SFTP and the `direct-tcpip` tunnel to a policy server; `lease()` marks one in use so it can't be disconnected mid-upload or mid-run.
+- [remote_upload.py](lelab/remote_upload.py) — SFTP copy of a local dataset to `<remote_dir>/<name>`: `.part` + rename per file (a right-sized file is finished, so a repeat resumes), `meta/` last.
+- [policy_server.py](lelab/policy_server.py) — **standalone** script (no `lelab` imports; torch/lerobot imported lazily) that serves a checkpoint over TCP on the GPU server, wire-compatible with the SO-101 sim project's policy server. Copied to the server by `/remote-servers/{name}/install-policy-server`; also the `lelab-policy-server` entry point. Keep it importable without LeLab (`tests/test_policy_server.py` checks).
+- [remote_policy.py](lelab/remote_policy.py) — in-process inference on the follower with that remote policy: chunk queue with prefetch and stale-action skip, timeouts, `max_relative_target`, return to the start pose on any fault. Shares `rollout.inference_active` (via `_claim_inference_slot`) and `/inference-status` / `/stop-inference` with local runs (`rollout._inference_mode`).
 - [utils/config.py](lelab/utils/config.py) — shared paths and persistence: calibration JSON, saved ports, saved config selections. **Import shared constants from here, do not hardcode paths in feature modules.**
 
 ### State model
@@ -60,6 +64,7 @@ All under `~/.cache/huggingface/lerobot/` (managed in [utils/config.py](lelab/ut
 - `calibration/robots/so101_follower/*.json` — follower calibration files (also called "robot")
 - `ports/{leader,follower}_port.txt` — last-used serial ports
 - `saved_configs/{leader,follower}_config.txt` — last-selected config name
+- `remote_servers/*.json` — remote SSH server profiles (no passwords); `remote_known_hosts` — host keys the user trusted in the UI
 
 `device_type` in API requests is `"teleop"` or `"robot"` (mapped to leader/follower paths). `robot_type` in port endpoints is `"leader"` or `"follower"`. Don't conflate the two vocabularies.
 
