@@ -50,6 +50,8 @@ include = ["lelab*", "frontend"]
 
 [tool.setuptools.package-data]
 frontend = ["dist/**/*"]
+# The Slurm training kit LeLab sends to remote servers (lelab/remote_upload.py).
+lelab = ["slurm/*"]
 
 [tool.ruff]
 target-version = "py312"

@@ -50,6 +50,13 @@ class FakeSftp:
                 if callback is not None:
                     callback(min(i + 4, len(data)), len(data))
 
+    def putfo(self, fl, remote: str) -> None:
+        self.puts.append(remote)
+        self._p(remote).write_bytes(fl.read())
+
+    def chmod(self, path: str, mode: int) -> None:
+        self._p(path).chmod(mode)
+
     def posix_rename(self, old: str, new: str) -> None:
         os.replace(self._p(old), self._p(new))
 
@@ -309,3 +316,65 @@ def test_rename_fallback_replaces_an_existing_file(dataset: Path, sftp: FakeSftp
     _upload_files(sftp, dataset, remote_root, files, lambda **_: None, threading.Event())
 
     assert (sftp._p(remote_root) / "meta" / "info.json").read_text() == '{"fps": 30}'
+
+
+def test_training_kit_lands_in_the_work_folder_with_its_folders_written_in(sftp: FakeSftp) -> None:
+    from lelab import remote_upload
+
+    profile = {"remote_work_dir": "projects/lelab", "remote_dataset_dir": "data"}
+    kit = remote_upload.install_training_kit(sftp, profile)
+
+    project = f"{HOME}/projects/lelab"
+    assert kit["remote_dir"] == project and kit["created_env"] is True
+    root = sftp._p(project)
+    for name in remote_upload.TRAINING_KIT_SCRIPTS:
+        script = root / "slurm" / name
+        assert script.is_file() and os.access(script, os.X_OK), name
+        assert "__LELAB" not in script.read_text().replace("__LELAB*)", "")
+    assert (
+        f"PROJECT_DIR=${{LELAB_PROJECT_DIR:-'{project}'}}"
+        in (root / "slurm" / "train_act.sbatch").read_text()
+    )
+    assert f"DATASET_DIR={HOME}/data\n" in (root / ".env.example").read_text()
+    assert (root / ".env").read_text() == (root / ".env.example").read_text()
+    assert (root / remote_upload.POLICY_SERVER_FILE).is_file()
+    assert not list(root.rglob("*.part"))
+
+
+def test_training_kit_never_overwrites_the_users_env(sftp: FakeSftp) -> None:
+    from lelab import remote_upload
+
+    kit = remote_upload.install_training_kit(sftp, {})
+    env = sftp._p(kit["env_path"])
+    env.write_text("DATASET=mine\n")
+
+    again = remote_upload.install_training_kit(sftp, {}, dataset_dir="/scratch/data")
+
+    assert again["created_env"] is False
+    assert env.read_text() == "DATASET=mine\n"
+    assert "DATASET_DIR=/scratch/data" in sftp._p(f"{HOME}/.env.example").read_text()
+
+
+def test_upload_can_send_the_training_kit(dataset: Path, sftp: FakeSftp, connected: SimpleNamespace) -> None:
+    from lelab import remote_upload
+
+    remote_upload.handle_start_upload(
+        remote_upload.RemoteUploadRequest(
+            server="cluster", dataset_repo_id=f"local/{dataset.name}", send_training_kit=True
+        )
+    )
+    status = _wait(remote_upload)
+
+    assert status["state"] == "done", status
+    assert status["training_kit"]["dataset_dir"] == f"{HOME}/data"
+    assert status["slurm_commands"][0] == (
+        f"DATASET={HOME}/data/{dataset.name} sbatch {HOME}/slurm/train_act.sbatch"
+    )
+    assert len(status["slurm_commands"]) == len(remote_upload.TRAINING_JOBS)
+
+
+def test_install_training_kit_route(connected: SimpleNamespace, client: TestClient) -> None:
+    response = client.post("/remote-servers/cluster/install-training-kit", json={"remote_dir": "work"})
+    assert response.status_code == 200, response.text
+    assert response.json()["remote_dir"] == f"{HOME}/work"
+    assert client.post("/remote-servers/nope/install-training-kit", json={}).status_code == 404

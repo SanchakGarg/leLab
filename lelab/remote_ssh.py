@@ -269,21 +269,35 @@ def connect(
 
 
 def ensure_connected(name: str) -> _Session:
-    """The live session for `name`, reconnecting with the remembered password if it dropped."""
+    """The live session for `name`, reconnecting quietly when that needs nothing from the user.
+
+    A session that dropped reconnects with the password remembered in memory. With
+    no session at all (LeLab restarted, which `lelab --dev` does on every reload),
+    a key or ssh-agent login reconnects on its own; a password login can't, since
+    the password was never saved. Anything that still needs the user answers 409
+    `not_connected`, so the UI can show its Connect form again.
+    """
     with _lock:
         session = _sessions.get(name)
     if session is not None and _is_active(session):
         return session
-    if session is None:
-        raise RemoteServerError(
-            f"Not connected to {name}. Connect to the server first.", 409, code="not_connected"
-        )
     profile = _profile(name)
-    if profile["auth"] == "password" and session.password is None:
+    password = session.password if session is not None else None
+    if profile["auth"] == "password" and password is None:
+        what = "dropped" if session is not None else "is not open (LeLab may have restarted)"
         raise RemoteServerError(
-            f"The connection to {name} dropped. Connect again.", 409, code="not_connected"
+            f"The connection to {name} {what}. Enter the password to connect again.",
+            409,
+            code="not_connected",
         )
-    connect(name, session.password)
+    try:
+        connect(name, password)
+    except RemoteServerError as exc:
+        if exc.code in ("unknown_host_key", "host_key_changed"):
+            raise
+        raise RemoteServerError(
+            f"Not connected to {name}, and reconnecting failed: {exc.message}", 409, code="not_connected"
+        ) from None
     with _lock:
         return _sessions[name]
 

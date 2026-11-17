@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CheckCircle, Copy, Loader2, Send, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -31,15 +32,64 @@ interface Props {
   autoStart?: boolean;
 }
 
+const SEND_KIT_KEY = "lelab.sendTrainingKit";
+const SESSION_POLL_MS = 5000;
+
+const readSendKit = (): boolean => {
+  try {
+    return window.localStorage.getItem(SEND_KIT_KEY) !== "false";
+  } catch {
+    return true;
+  }
+};
+
+/** A command with a copy button. */
+const CommandLine: React.FC<{ command: string; copied: boolean; onCopy: () => void }> = ({ command, copied, onCopy }) => (
+  <div className="flex items-start gap-2">
+    <code className="block flex-1 break-all rounded bg-black/50 px-2 py-1.5 text-xs text-gray-200">{command}</code>
+    <Button
+      size="icon"
+      variant="ghost"
+      aria-label="Copy the command"
+      onClick={() => {
+        navigator.clipboard?.writeText(command);
+        onCopy();
+      }}
+      className="h-7 w-7 shrink-0 text-gray-400 hover:text-white"
+    >
+      {copied ? <CheckCircle className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+    </Button>
+  </div>
+);
+
 /** Copy a local dataset to the remote server over SFTP, with progress, and show how to train on it there. */
 const SendToServerDialog: React.FC<Props> = ({ open, onOpenChange, datasetRepoId, autoStart = false }) => {
-  const { servers, selected, selectServer } = useRemoteServers();
+  const { servers, selected, selectServer, refresh } = useRemoteServers();
   const { status, error, starting, start, cancel } = useRemoteUpload(open);
   const [remoteDir, setRemoteDir] = useState("");
   const [remoteName, setRemoteName] = useState("");
+  const [sendKit, setSendKitState] = useState<boolean>(readSendKit);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
   const autoStarted = useRef(false);
+
+  const setSendKit = (value: boolean) => {
+    setSendKitState(value);
+    try {
+      window.localStorage.setItem(SEND_KIT_KEY, String(value));
+    } catch {
+      // storage unavailable: the choice lasts for this page only
+    }
+  };
+
+  // The connection state shown here must be the server's, not the one from when the page loaded: LeLab
+  // forgets its SSH sessions when it restarts, and a connection can drop while a dataset records.
+  useEffect(() => {
+    if (!open) return;
+    refresh();
+    const timer = setInterval(refresh, SESSION_POLL_MS);
+    return () => clearInterval(timer);
+  }, [open, refresh]);
 
   const folderName = datasetRepoId.split("/").pop() ?? datasetRepoId;
   useEffect(() => {
@@ -53,9 +103,18 @@ const SendToServerDialog: React.FC<Props> = ({ open, onOpenChange, datasetRepoId
   const running = status.state === "running";
   const connected = !!selected?.session.connected;
 
-  const send = () => {
+  const send = async () => {
     if (!selected) return;
-    start({ server: selected.name, dataset_repo_id: datasetRepoId, remote_dir: remoteDir, remote_name: remoteName });
+    selectServer(selected.name); // the last server sent to is the default next time
+    const ok = await start({
+      server: selected.name,
+      dataset_repo_id: datasetRepoId,
+      remote_dir: remoteDir,
+      remote_name: remoteName,
+      send_training_kit: sendKit,
+    });
+    // Most often the session is gone: refresh so the Connect form shows instead of a stale "Connected".
+    if (!ok) refresh();
   };
 
   useEffect(() => {
@@ -103,6 +162,7 @@ const SendToServerDialog: React.FC<Props> = ({ open, onOpenChange, datasetRepoId
                       {servers.map((s) => (
                         <SelectItem key={s.name} value={s.name}>
                           {s.name} — {s.username}@{s.host}
+                          {s.session.connected ? " · connected" : ""}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -136,6 +196,24 @@ const SendToServerDialog: React.FC<Props> = ({ open, onOpenChange, datasetRepoId
                 </div>
               </div>
 
+              <label className="flex items-start gap-2 text-sm text-gray-300">
+                <Checkbox
+                  checked={sendKit}
+                  disabled={running}
+                  onCheckedChange={(v) => setSendKit(v === true)}
+                  aria-label="Also send the Slurm training files"
+                  className="mt-0.5"
+                />
+                <span>
+                  Also send the Slurm training files to{" "}
+                  <code className="text-xs text-gray-200">{selected.remote_work_dir || "the home folder"}</code>
+                  <span className="block text-xs text-gray-500">
+                    .env.example (env, dataset, output and policy folders), jobs to train ACT and SmolVLA (full and
+                    LoRA) and to serve a policy. Your .env is never overwritten.
+                  </span>
+                </span>
+              </label>
+
               {mine && status.state !== "idle" ? (
                 <div className="space-y-2 rounded-md border border-gray-800 bg-black/30 p-3 text-sm">
                   <div className="flex items-center justify-between text-gray-300">
@@ -161,27 +239,38 @@ const SendToServerDialog: React.FC<Props> = ({ open, onOpenChange, datasetRepoId
                         On the server at <code className="break-all text-xs">{status.remote_path}</code>
                         {status.files_skipped ? ` (${status.files_skipped} files were already there)` : ""}
                       </p>
-                      {status.train_command ? (
+                      {status.training_kit ? (
+                        <p className="text-xs text-gray-400">
+                          Slurm files in <code className="break-all">{status.training_kit.remote_dir}</code>.{" "}
+                          {status.training_kit.created_env
+                            ? "Created .env from .env.example: set LELAB_ENV_DIR (your LeRobot venv) there."
+                            : "Your .env was kept; .env.example has the latest options."}
+                        </p>
+                      ) : null}
+                      {status.slurm_commands?.length ? (
+                        <div className="space-y-1">
+                          <p className="text-xs text-gray-400">Train on it with Slurm (from a login shell):</p>
+                          {status.slurm_commands.map((command) => (
+                            <CommandLine
+                              key={command}
+                              command={command}
+                              copied={copied === command}
+                              onCopy={() => setCopied(command)}
+                            />
+                          ))}
+                        </div>
+                      ) : status.train_command ? (
                         <div className="space-y-1">
                           <p className="text-xs text-gray-400">Train on it there, for example:</p>
-                          <div className="flex items-start gap-2">
-                            <code className="block flex-1 break-all rounded bg-black/50 px-2 py-1.5 text-xs text-gray-200">
-                              {status.train_command}
-                            </code>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              aria-label="Copy the training command"
-                              onClick={() => {
-                                navigator.clipboard?.writeText(status.train_command ?? "");
-                                setCopied(true);
-                              }}
-                              className="h-7 w-7 text-gray-400 hover:text-white"
-                            >
-                              {copied ? <CheckCircle className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                            </Button>
-                          </div>
+                          <CommandLine
+                            command={status.train_command}
+                            copied={copied === status.train_command}
+                            onCopy={() => setCopied(status.train_command ?? null)}
+                          />
                         </div>
+                      ) : null}
+                      {status.training_kit_error ? (
+                        <p className="text-xs text-amber-300">{status.training_kit_error}</p>
                       ) : null}
                     </div>
                   ) : null}

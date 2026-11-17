@@ -27,7 +27,7 @@ interface Props {
  */
 const ServerConnectForm: React.FC<Props> = ({ server, allowDisconnect = false }) => {
   const { baseUrl, fetchWithHeaders } = useApi();
-  const { refresh } = useRemoteServers();
+  const { refresh, selectServer } = useRemoteServers();
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +43,7 @@ const ServerConnectForm: React.FC<Props> = ({ server, allowDisconnect = false })
       });
       setPassword("");
       setChallenge(null);
+      selectServer(server.name); // the last server connected to is the default next time
       await refresh();
     } catch (e) {
       const hostKey = hostKeyChallenge(e);

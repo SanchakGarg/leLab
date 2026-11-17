@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Copy, Loader2, Server, Trash2 } from "lucide-react";
+import { Copy, FileCog, Loader2, Server, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,7 +26,9 @@ import {
   emptyProfile,
   errorText,
   installPolicyServer,
+  installTrainingKit,
   saveRemoteServer,
+  TrainingKitResult,
 } from "@/lib/remoteApi";
 import ServerConnectForm from "./ServerConnectForm";
 
@@ -47,6 +49,7 @@ const RemoteServerDialog: React.FC<Props> = ({ open, onOpenChange }) => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [install, setInstall] = useState<{ busy: boolean; result?: string; error?: string }>({ busy: false });
+  const [kit, setKit] = useState<{ busy: boolean; result?: TrainingKitResult; error?: string }>({ busy: false });
 
   // Open on the selected server, or on a blank form when none is saved.
   useEffect(() => {
@@ -54,6 +57,7 @@ const RemoteServerDialog: React.FC<Props> = ({ open, onOpenChange }) => {
     setEditing(selected?.name ?? NEW);
     setError(null);
     setInstall({ busy: false });
+    setKit({ busy: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -112,6 +116,20 @@ const RemoteServerDialog: React.FC<Props> = ({ open, onOpenChange }) => {
       setInstall({ busy: false, result: result.command });
     } catch (e) {
       setInstall({ busy: false, error: errorText(e) });
+    }
+  };
+
+  const sendTrainingKit = async () => {
+    if (!current) return;
+    setKit({ busy: true });
+    try {
+      const result = await installTrainingKit(baseUrl, fetchWithHeaders, current.name, {
+        remote_dir: profile.remote_work_dir,
+        dataset_dir: profile.remote_dataset_dir,
+      });
+      setKit({ busy: false, result });
+    } catch (e) {
+      setKit({ busy: false, error: errorText(e) });
     }
   };
 
@@ -294,6 +312,36 @@ const RemoteServerDialog: React.FC<Props> = ({ open, onOpenChange }) => {
                   </div>
                 ) : null}
                 {install.error ? <p className="text-xs text-red-300">{install.error}</p> : null}
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={sendTrainingKit}
+                  disabled={kit.busy}
+                  className="border-gray-700 bg-gray-950 text-xs text-gray-300 hover:bg-gray-900"
+                >
+                  {kit.busy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <FileCog className="mr-1.5 h-3.5 w-3.5" />}
+                  Send Slurm training files to the work folder
+                </Button>
+                {kit.result ? (
+                  <div className="space-y-1 text-xs text-gray-400">
+                    <p>
+                      Sent .env.example, slurm/ (train_act, train_act_lora, train_smolvla_full, train_smolvla_lora,
+                      serve_policy) and the policy server to{" "}
+                      <code className="break-all text-gray-200">{kit.result.remote_dir}</code>.
+                    </p>
+                    <p>
+                      {kit.result.created_env
+                        ? `Created ${kit.result.env_path}: set LELAB_ENV_DIR, DATASET and the folders there.`
+                        : `Your ${kit.result.env_path} was kept; compare it with .env.example for new options.`}
+                    </p>
+                    <p>Serve a trained policy (POLICY in .env):</p>
+                    <code className="block break-all rounded bg-black/50 px-2 py-1.5 text-gray-200">
+                      {kit.result.serve_command}
+                    </code>
+                  </div>
+                ) : null}
+                {kit.error ? <p className="text-xs text-red-300">{kit.error}</p> : null}
               </div>
             ) : null}
           </div>

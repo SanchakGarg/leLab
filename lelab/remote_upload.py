@@ -25,10 +25,16 @@ when complete, so a file with the right size on the server is a finished one
 and is skipped next time. `meta/` goes last, so the copy only looks like a
 dataset once everything else is there. One upload at a time; the UI polls the
 status.
+
+The same SFTP session also installs the Slurm training kit (lelab/slurm/) in the
+server's work folder: `.env.example` (folders and training settings), the
+`slurm/*.sbatch` jobs that train ACT and SmolVLA (full and LoRA) and serve a
+trained policy, and the policy server script they run.
 """
 
 from __future__ import annotations
 
+import io
 import logging
 import posixpath
 import shlex
@@ -55,6 +61,8 @@ class RemoteUploadRequest(BaseModel):
     remote_dir: str = ""
     # Name of the dataset folder on the server. Empty: the local folder's name.
     remote_name: str = ""
+    # Also send the Slurm training kit to the profile's work folder, with DATASET_DIR set to remote_dir.
+    send_training_kit: bool = False
 
 
 class InstallPolicyServerRequest(BaseModel):
@@ -66,7 +74,26 @@ class UploadCancelledError(Exception):
     pass
 
 
+class TrainingKitRequest(BaseModel):
+    # Project folder for .env.example and slurm/. Empty: the profile's remote_work_dir, else the home.
+    remote_dir: str = ""
+    # DATASET_DIR written into .env.example. Empty: the profile's remote_dataset_dir, else the home.
+    dataset_dir: str = ""
+
+
 POLICY_SERVER_FILE = "lelab_policy_server.py"
+TRAINING_KIT_DIR = Path(__file__).with_name("slurm")
+# Files of lelab/slurm/ that go to <project>/slurm/, in this order.
+TRAINING_KIT_SCRIPTS = (
+    "lelab_common.sh",
+    "lelab_train.sh",
+    "train_act.sbatch",
+    "train_act_lora.sbatch",
+    "train_smolvla_full.sbatch",
+    "train_smolvla_lora.sbatch",
+    "serve_policy.sbatch",
+)
+TRAINING_JOBS = tuple(f for f in TRAINING_KIT_SCRIPTS if f.startswith("train_"))
 
 
 _lock = threading.Lock()
@@ -167,6 +194,19 @@ def _put_file(sftp: paramiko.SFTPClient, local: Path, remote: str, callback=None
     """Write to <remote>.part, then rename it into place, so a complete-looking file is a complete one."""
     tmp = remote + ".part"
     sftp.put(str(local), tmp, callback=callback)
+    _move_into_place(sftp, tmp, remote)
+
+
+def _put_bytes(sftp: paramiko.SFTPClient, data: bytes, remote: str, mode: int | None = None) -> None:
+    """_put_file for generated content."""
+    tmp = remote + ".part"
+    sftp.putfo(io.BytesIO(data), tmp)
+    if mode is not None:
+        sftp.chmod(tmp, mode)
+    _move_into_place(sftp, tmp, remote)
+
+
+def _move_into_place(sftp: paramiko.SFTPClient, tmp: str, remote: str) -> None:
     try:
         sftp.posix_rename(tmp, remote)
     except OSError:
@@ -185,6 +225,74 @@ def train_command(remote_root: str, name: str) -> str:
         "--policy.type=act --policy.device=cuda --policy.push_to_hub=false "
         f"--output_dir={shlex.quote('outputs/act_' + name)}"
     )
+
+
+def _sh_single_quoted(value: str) -> str:
+    """`value` for the inside of a '...' shell string."""
+    return value.replace("'", "'\\''")
+
+
+def render_training_kit_file(name: str, project_dir: str, dataset_dir: str) -> str:
+    """A kit file with this server's folders written in."""
+    text = (TRAINING_KIT_DIR / name).read_text()
+    text = text.replace("__LELAB_PROJECT_DIR__", _sh_single_quoted(project_dir))
+    text = text.replace("{project}", project_dir)
+    return text.replace("__LELAB_DATASET_DIR__", shlex.quote(dataset_dir))
+
+
+def slurm_train_commands(project_dir: str, dataset_path: str) -> list[str]:
+    """One sbatch line per training job, for a dataset at `dataset_path` on the server."""
+    return [
+        f"DATASET={shlex.quote(dataset_path)} sbatch {shlex.quote(posixpath.join(project_dir, 'slurm', job))}"
+        for job in TRAINING_JOBS
+    ]
+
+
+def install_training_kit(
+    sftp: paramiko.SFTPClient, profile: dict[str, Any], remote_dir: str = "", dataset_dir: str = ""
+) -> dict[str, Any]:
+    """Copy .env.example, slurm/ and the policy server to the project folder.
+
+    Scripts and .env.example are replaced every time, so a newer LeLab updates
+    them; .env holds the user's own settings and is only written when missing.
+    """
+    project = resolve_remote_dir(sftp, remote_dir or profile.get("remote_work_dir", ""))
+    datasets = resolve_remote_dir(sftp, dataset_dir or profile.get("remote_dataset_dir", ""))
+    slurm_dir = posixpath.join(project, "slurm")
+    _mkdirs(sftp, slurm_dir, set())
+    files = []
+    for name in TRAINING_KIT_SCRIPTS:
+        remote = posixpath.join(slurm_dir, name)
+        _put_bytes(sftp, render_training_kit_file(name, project, datasets).encode(), remote, 0o755)
+        files.append(remote)
+    server = posixpath.join(project, POLICY_SERVER_FILE)
+    _put_file(sftp, Path(__file__).with_name("policy_server.py"), server)
+    files.append(server)
+    env_text = render_training_kit_file("env.example", project, datasets).encode()
+    _put_bytes(sftp, env_text, posixpath.join(project, ".env.example"))
+    files.append(posixpath.join(project, ".env.example"))
+    env_path = posixpath.join(project, ".env")
+    created_env = _remote_size(sftp, env_path) is None
+    if created_env:
+        _put_bytes(sftp, env_text, env_path)
+        files.append(env_path)
+    return {
+        "remote_dir": project,
+        "dataset_dir": datasets,
+        "files": files,
+        "created_env": created_env,
+        "env_path": env_path,
+        "serve_command": f"sbatch {shlex.quote(posixpath.join(slurm_dir, 'serve_policy.sbatch'))}",
+    }
+
+
+def _has_training_kit(sftp: paramiko.SFTPClient, profile: dict[str, Any]) -> str | None:
+    """The project folder, when the kit is already installed there."""
+    try:
+        project = resolve_remote_dir(sftp, profile.get("remote_work_dir", ""))
+        return project if _remote_size(sftp, posixpath.join(project, "slurm", "lelab_train.sh")) else None
+    except (OSError, paramiko.SSHException):
+        return None
 
 
 def _set(**fields: Any) -> None:
@@ -206,9 +314,21 @@ def _worker(request: RemoteUploadRequest, local_dir: Path, name: str, files: lis
             sftp = remote_ssh.open_sftp(session)
             try:
                 remote_dir = request.remote_dir or session.profile.get("remote_dataset_dir", "")
-                remote_root = posixpath.join(resolve_remote_dir(sftp, remote_dir), name)
+                dataset_dir = resolve_remote_dir(sftp, remote_dir)
+                remote_root = posixpath.join(dataset_dir, name)
                 _set(remote_path=remote_root)
                 skipped = _upload_files(sftp, local_dir, remote_root, files, progress, _cancel)
+                kit: dict[str, Any] | None = None
+                kit_error = None
+                if request.send_training_kit:
+                    _set(current_file="Slurm training files")
+                    try:
+                        kit = install_training_kit(sftp, session.profile, dataset_dir=dataset_dir)
+                    except (OSError, paramiko.SSHException) as exc:
+                        # The dataset is there; only the extras failed.
+                        logger.warning("Could not send the Slurm training files: %s", exc)
+                        kit_error = f"The dataset arrived, but the Slurm files could not be sent: {exc}"
+                project = kit["remote_dir"] if kit else _has_training_kit(sftp, session.profile)
             finally:
                 sftp.close()
         _set(
@@ -217,6 +337,9 @@ def _worker(request: RemoteUploadRequest, local_dir: Path, name: str, files: lis
             current_file=None,
             finished_at=time.time(),
             train_command=train_command(remote_root, name),
+            slurm_commands=slurm_train_commands(project, remote_root) if project else None,
+            training_kit=kit,
+            training_kit_error=kit_error,
         )
         logger.info(
             "Sent %s to %s:%s (%d files already there)",
@@ -282,6 +405,9 @@ def handle_start_upload(request: RemoteUploadRequest) -> dict[str, Any]:
             current_file=None,
             error=None,
             train_command=None,
+            slurm_commands=None,
+            training_kit=None,
+            training_kit_error=None,
             started_at=time.time(),
             finished_at=None,
         )
@@ -337,3 +463,19 @@ def handle_install_policy_server(name: str, request: InstallPolicyServerRequest)
             "--policy <run folder>/checkpoints/last/pretrained_model --port 5555"
         ),
     }
+
+
+def handle_install_training_kit(name: str, request: TrainingKitRequest) -> dict[str, Any]:
+    """Send the Slurm training kit (lelab/slurm/ and the policy server) to the server's project folder."""
+    if config.get_remote_server(name) is None:
+        raise remote_ssh.RemoteServerError(f"No saved server named {name!r}", 404)
+    with remote_ssh.lease(name) as session:
+        sftp = remote_ssh.open_sftp(session)
+        try:
+            kit = install_training_kit(sftp, session.profile, request.remote_dir, request.dataset_dir)
+        except (OSError, paramiko.SSHException) as exc:
+            raise remote_ssh.RemoteServerError(f"Could not send the Slurm files: {exc}", 502) from None
+        finally:
+            sftp.close()
+    logger.info("Sent the Slurm training files to %s:%s", name, kit["remote_dir"])
+    return kit

@@ -9,7 +9,7 @@ interface RemoteServerValue {
   servers: RemoteServer[];
   loading: boolean;
   refresh: () => Promise<void>;
-  /** The server the UI uses by default (last picked, else the first saved). */
+  /** The server the UI uses by default: the last one picked or connected to, else the first saved. */
   selected: RemoteServer | null;
   selectServer: (name: string | null) => void;
 }
@@ -32,7 +32,9 @@ export const RemoteServerProvider: React.FC<{ children: ReactNode }> = ({ childr
 
   const refresh = useCallback(async () => {
     try {
-      setServers(await listRemoteServers(baseUrl, fetchWithHeaders));
+      const next = await listRemoteServers(baseUrl, fetchWithHeaders);
+      // Keep the same array when nothing changed, so polling doesn't re-render (or reset) open forms.
+      setServers((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
     } catch (err) {
       // An older backend without these routes, or none reachable: no servers.
       console.warn("Remote servers fetch failed:", err);

@@ -1580,6 +1580,12 @@ def remote_server_install_policy_server(name: str, request: remote_upload.Instal
     return _remote_call(remote_upload.handle_install_policy_server, name, request)
 
 
+@app.post("/remote-servers/{name}/install-training-kit", dependencies=REMOTE_GUARD)
+def remote_server_install_training_kit(name: str, request: remote_upload.TrainingKitRequest):
+    """Send .env.example, the Slurm training/serving jobs and the policy server to the server's project folder."""
+    return _remote_call(remote_upload.handle_install_training_kit, name, request)
+
+
 @app.post("/remote-policy/probe", dependencies=REMOTE_GUARD)
 def remote_policy_probe(request: remote_policy.PolicyConnection):
     """Connect to a policy server (through the server's SSH session or directly) and return its hello."""

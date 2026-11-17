@@ -210,6 +210,32 @@ def test_ensure_connected_without_a_session() -> None:
     assert exc.value.code == "not_connected"
 
 
+def test_an_agent_login_reconnects_on_its_own_after_a_restart() -> None:
+    """No session (LeLab restarted): a login that needs no secret just reconnects."""
+    from lelab import remote_ssh
+    from lelab.utils import config as cfg
+
+    cfg.save_remote_server("cluster", {**PROFILE, "auth": "agent"})
+
+    session = remote_ssh.ensure_connected("cluster")
+
+    assert session.client is FakeClient.instances[-1]
+    assert remote_ssh.status("cluster")["connected"] is True
+
+
+def test_a_failed_quiet_reconnect_is_not_connected() -> None:
+    from lelab import remote_ssh
+    from lelab.utils import config as cfg
+
+    cfg.save_remote_server("cluster", {**PROFILE, "auth": "agent"})
+    FakeClient.mode = "auth_fail"
+
+    with pytest.raises(remote_ssh.RemoteServerError) as exc:
+        remote_ssh.ensure_connected("cluster")
+    assert exc.value.code == "not_connected"
+    assert exc.value.status_code == 409
+
+
 def test_connect_route_reports_the_fingerprint(client: TestClient) -> None:
     FakeClient.known = False
 

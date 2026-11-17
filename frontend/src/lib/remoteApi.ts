@@ -101,6 +101,30 @@ export async function installPolicyServer(
   });
 }
 
+/** What sending the Slurm training kit (.env.example, slurm/*.sbatch, the policy server) put on the server. */
+export interface TrainingKitResult {
+  remote_dir: string;
+  dataset_dir: string;
+  files: string[];
+  /** .env was missing and was created from .env.example (an existing .env is never touched). */
+  created_env: boolean;
+  env_path: string;
+  serve_command: string;
+}
+
+export async function installTrainingKit(
+  baseUrl: string,
+  fetcher: Fetcher,
+  name: string,
+  body: { remote_dir?: string; dataset_dir?: string } = {},
+): Promise<TrainingKitResult> {
+  return apiRequest(baseUrl, fetcher, `/remote-servers/${enc(name)}/install-training-kit`, {
+    method: "POST",
+    body,
+    action: "Send the Slurm training files",
+  });
+}
+
 /** The server's host key, when a connect needs the user to confirm it first. */
 export interface HostKeyChallenge {
   fingerprint: string;
@@ -137,6 +161,10 @@ export interface RemoteUploadStatus {
   current_file?: string | null;
   error?: string | null;
   train_command?: string | null;
+  /** sbatch lines for the training jobs, when the Slurm training kit is on the server. */
+  slurm_commands?: string[] | null;
+  training_kit?: TrainingKitResult | null;
+  training_kit_error?: string | null;
 }
 
 export interface RemoteUploadRequest {
@@ -144,6 +172,8 @@ export interface RemoteUploadRequest {
   dataset_repo_id: string;
   remote_dir: string;
   remote_name: string;
+  /** Also send the Slurm training kit to the server's work folder. */
+  send_training_kit?: boolean;
 }
 
 export async function startRemoteUpload(
