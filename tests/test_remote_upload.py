@@ -337,6 +337,7 @@ def test_training_kit_lands_in_the_work_folder_with_its_folders_written_in(sftp:
     )
     assert f"DATASET_DIR={HOME}/data\n" in (root / ".env.example").read_text()
     assert (root / ".env").read_text() == (root / ".env.example").read_text()
+    assert (root / ".env").stat().st_mode & 0o777 == 0o600
     assert (root / remote_upload.POLICY_SERVER_FILE).is_file()
     assert not list(root.rglob("*.part"))
 

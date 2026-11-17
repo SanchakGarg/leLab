@@ -116,6 +116,7 @@ def test_training_jobs_build_argv_lerobot_accepts(
     cfg.validate()
     assert cfg.policy.type == policy_type
     assert (cfg.peft is not None) == lora
+    assert cfg.trackio.enable and cfg.trackio.project == "lelab"
     if policy_type == "smolvla":
         assert cfg.rename_map == {
             "observation.images.front": "observation.images.camera1",
@@ -183,3 +184,21 @@ def test_without_lelab_the_scripts_use_the_submit_folder(project: Path, tmp_path
         shutil.copy(remote_upload.TRAINING_KIT_DIR / name, project / "slurm" / name)
     result = _run(project, "train_act.sbatch", cwd=project, DATASET=str(tmp_path / "data" / "pick_cube"))
     assert result.returncode == 0, result.stderr
+
+
+def test_trackio_settings(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = _run(project, "train_act.sbatch", DATASET="pick_cube", TRACKIO_SPACE_ID="me/lelab-trackio")
+    assert result.returncode == 0, result.stderr
+    argv = json.loads((project / "argv.json").read_text())
+    shutil.rmtree(project / "outputs")
+    monkeypatch.setattr(sys, "argv", ["lerobot-train", *argv])
+    cfg = _parse_training()
+    assert cfg.trackio.space_id == "me/lelab-trackio" and cfg.trackio.private is True
+
+    assert _run(project, "train_act.sbatch", DATASET="pick_cube", TRACKIO="0").returncode == 0
+    assert "--trackio.enable=false" in json.loads((project / "argv.json").read_text())
+
+    # A resumed run keeps tracking.
+    assert _run(project, "train_act.sbatch", DATASET="pick_cube").returncode == 0
+    argv = json.loads((project / "argv.json").read_text())
+    assert "--resume=true" in argv and "--trackio.enable=true" in argv

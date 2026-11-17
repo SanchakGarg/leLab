@@ -74,6 +74,7 @@ Set these in `.env` once:
 | `OUTPUT_DIR` | `outputs` | training runs, one folder per run: `<policy>_<full\|lora>_<dataset>[_<RUN_TAG>]` |
 | `POLICY_DIR` | `policies` | each finished run's last checkpoint is copied to `POLICY_DIR/<run>` |
 | `POLICY` | newest in `POLICY_DIR` | what `serve_policy.sbatch` serves |
+| `TRACKIO` | `1` | track every run with Trackio (loss, learning rate, speed), project `TRACKIO_PROJECT` (`lelab`), stored in `TRACKIO_DIR` (`trackio`). Set `TRACKIO_SPACE_ID` (and `HF_TOKEN`) to sync live to a private Space instead. `0` turns it off. |
 
 Relative folders are inside the work folder. The training settings (steps, batch size, learning rates, LoRA rank and targets, which camera is SmolVLA's `camera1`, ...) are in `.env.example`, grouped per job. Then, from a login shell:
 

@@ -274,7 +274,7 @@ def install_training_kit(
     env_path = posixpath.join(project, ".env")
     created_env = _remote_size(sftp, env_path) is None
     if created_env:
-        _put_bytes(sftp, env_text, env_path)
+        _put_bytes(sftp, env_text, env_path, 0o600)  # it may hold HF_TOKEN
         files.append(env_path)
     return {
         "remote_dir": project,

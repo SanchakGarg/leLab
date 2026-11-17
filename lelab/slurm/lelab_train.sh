@@ -129,6 +129,28 @@ if [ "$AUGMENT" = 1 ]; then add --dataset.image_transforms.enable=true; fi
 if [ -n "${SEED:-}" ]; then add --seed="$SEED"; fi
 
 # ---- train (or resume) ------------------------------------------------------------------------------------------------
+# ---- Trackio: loss, learning rate and speed per run, in TRACKIO_DIR (or a Hugging Face Space) --------------------------
+TRACK_ARGS=()
+if [ "${TRACKIO:-1}" = 1 ]; then
+    if "$PY" -c "import trackio" 2>/dev/null; then
+        TRACKIO_DIR=$(lelab_path "${TRACKIO_DIR:-trackio}")
+        export TRACKIO_DIR
+        TRACK_ARGS=(--trackio.enable=true --trackio.project="${TRACKIO_PROJECT:-lelab}")
+        if [ -n "${TRACKIO_SPACE_ID:-}" ]; then
+            TRACK_ARGS+=(--trackio.space_id="$TRACKIO_SPACE_ID" --trackio.private=true)
+            echo "=== Trackio: project ${TRACKIO_PROJECT:-lelab}, synced to the Space $TRACKIO_SPACE_ID ==="
+        else
+            echo "=== Trackio: project ${TRACKIO_PROJECT:-lelab}, runs in $TRACKIO_DIR" \
+                "(view: TRACKIO_DIR=$TRACKIO_DIR $LELAB_ENV_DIR/bin/trackio show --project ${TRACKIO_PROJECT:-lelab}) ==="
+        fi
+    else
+        echo "WARNING: TRACKIO=1, but trackio isn't installed in $LELAB_ENV_DIR, so this run isn't tracked." \
+            "Install it with: $PY -m pip install 'lerobot[training]' (or set TRACKIO=0)." >&2
+    fi
+else
+    TRACK_ARGS=(--trackio.enable=false)
+fi
+
 mkdir -p "$OUTPUT_DIR" "$POLICY_DIR"
 if [ -f "$LAST" ]; then
     echo "=== resuming $OUT from $(readlink "$OUT/checkpoints/last" || echo last), to step $STEPS ==="
@@ -146,6 +168,7 @@ else
         --batch_size="$BATCH" --steps="$STEPS"
         --save_freq="$SAVE_FREQ" --log_freq="$LOG_FREQ" --num_workers="$NUM_WORKERS")
 fi
+CMD+=(${TRACK_ARGS[@]+"${TRACK_ARGS[@]}"})
 if [ -n "${EXTRA_TRAIN_ARGS:-}" ]; then
     # shellcheck disable=SC2206
     CMD+=($EXTRA_TRAIN_ARGS)
