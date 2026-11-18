@@ -32,6 +32,7 @@ def test_script_imports_nothing_from_lelab_or_torch_at_module_level() -> None:
         "contextlib",
         "io",
         "json",
+        "os",
         "socket",
         "struct",
         "sys",
@@ -231,3 +232,67 @@ def test_a_second_client_is_told_the_server_is_busy() -> None:
         stop.set()
         thread.join(3)
         srv.close()
+
+
+def test_the_server_exits_when_its_stdin_closes() -> None:
+    import os
+    import threading
+
+    from lelab.policy_server import exit_when_stdin_closes
+
+    read_end, write_end = os.pipe()
+    exits: list[int] = []
+    done = threading.Event()
+    try:
+        exit_when_stdin_closes(read_end, lambda code: (exits.append(code), done.set()))
+        os.write(write_end, b"anything written is ignored")
+        assert not done.wait(0.2)
+        os.close(write_end)
+        assert done.wait(2)
+    finally:
+        os.close(read_end)
+    assert exits == [0]
+
+
+def test_a_server_failing_to_load_exits_cleanly_with_stdin_watched(tmp_path) -> None:
+    """The stdin watcher must not turn an ordinary error exit into an interpreter abort."""
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "lelab.policy_server", "--policy", str(tmp_path / "missing"), "--watch-stdin"],
+        stdin=subprocess.PIPE,  # held open, as LeLab does, so the load error ends it, not the watcher
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert proc.wait(timeout=120) == 1
+        stderr = proc.stderr.read().decode()
+        assert "Fatal Python error" not in stderr, stderr[-2000:]
+    finally:
+        proc.stdin.close()
+        proc.stderr.close()
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_the_server_exits_when_lelab_dies_too() -> None:
+    """LeLab gone: stdin closes and stdout has no reader left. Writing the goodbye line then fails; the
+    server must exit anyway, or it stays behind holding the port (and the GPU or CPU)."""
+    import subprocess
+    import sys
+
+    script = "import time; from lelab.policy_server import exit_when_stdin_closes; exit_when_stdin_closes(); time.sleep(60)"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        proc.stdout.close()  # what LeLab dying does to the server's stdout...
+        proc.stdin.close()  # ...and to its stdin
+        assert proc.wait(timeout=20) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()

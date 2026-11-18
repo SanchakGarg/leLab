@@ -45,12 +45,15 @@ class FakeModel:
         self.calls = 0
         self.fail_after = fail_after
         self.delay_s = delay_s
+        self.resets = 0
+        self.tasks: list[str] = []
 
     def reset(self) -> None:
-        pass
+        self.resets += 1
 
     def predict_chunk(self, images: dict, state: np.ndarray, task: str) -> np.ndarray:
         self.calls += 1
+        self.tasks.append(task)
         if self.fail_after is not None and self.calls > self.fail_after:
             raise RuntimeError("CUDA out of memory")
         time.sleep(self.delay_s)
@@ -142,6 +145,46 @@ def test_client_prefetches_and_skips_actions_already_played() -> None:
     # ...so the new chunk (predicted for step 7) is entered 2 actions in, lined up with the present.
     assert client.next_action(IMAGES, np.zeros(6), "t")[0] == 202
     assert client.stats()["chunks"] == 2
+
+
+def _play_into_second_chunk(blend_steps: int) -> tuple[list[float], Any]:
+    """Play 6 actions of chunk 1 (100..109), so chunk 2 (200..209) arrives with 106..109 still unplayed."""
+    client, server = _client(prefetch=5)
+    client.blend_steps = blend_steps
+    server.release.release()
+    played = [client.next_action(IMAGES, np.zeros(6), "t")[0] for _ in range(6)]
+    assert played == [100, 101, 102, 103, 104, 105]
+    deadline = time.time() + 2
+    while len(server.requests) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    server.release.release()
+    time.sleep(0.1)
+    played = [float(client.next_action(IMAGES, np.zeros(6), "t")[0]) for _ in range(5)]
+    return played, client
+
+
+def test_without_blending_the_new_chunk_replaces_the_queue() -> None:
+    played, client = _play_into_second_chunk(blend_steps=0)
+    assert played == [201, 202, 203, 204, 205]  # chunk 2 from step 6, where it lines up with the present
+    assert client.stats()["blended"] == 0
+
+
+def test_blending_crossfades_from_the_old_chunk_into_the_new_one() -> None:
+    played, client = _play_into_second_chunk(blend_steps=3)
+    # Old 106, 107, 108 fade into new 201, 202, 203 with the new chunk's weight 1/4, 2/4, 3/4; then all new.
+    assert played == pytest.approx(
+        [0.75 * 106 + 0.25 * 201, 0.5 * 107 + 0.5 * 202, 0.25 * 108 + 0.75 * 203, 204, 205]
+    )
+    assert client.stats()["blended"] == 3
+    assert client.stats()["blend_steps"] == 3
+
+
+def test_blending_stops_where_the_old_chunk_ends() -> None:
+    played, client = _play_into_second_chunk(blend_steps=50)
+    # Four unplayed old actions (106..109): the fade spans those four, weights 1/5 .. 4/5.
+    assert played[:4] == pytest.approx([(4 - i) / 5 * (106 + i) + (i + 1) / 5 * (201 + i) for i in range(4)])
+    assert played[4] == 205
+    assert client.stats()["blended"] == 4
 
 
 def test_client_raises_on_an_error_reply() -> None:
@@ -329,7 +372,9 @@ class BusFollower(FakeFollower):
         return action
 
 
-def _start_run(port: int, robot: Any = None, **overrides: Any) -> tuple[Any, FakeFollower]:
+def _start_run(
+    port: int, robot: Any = None, client_prefetch: int = 3, **overrides: Any
+) -> tuple[Any, FakeFollower]:
     from lelab import rollout
     from lelab.remote_policy import (
         RemoteInferenceRequest,
@@ -353,7 +398,8 @@ def _start_run(port: int, robot: Any = None, **overrides: Any) -> tuple[Any, Fak
     hello = read_hello(sock)
     robot = robot or FakeFollower()
     assert rollout._claim_inference_slot() is None
-    run = RemoteRun(request, robot, RemotePolicyClient(sock, hello, prefetch=3), hello, address, lease)
+    client = RemotePolicyClient(sock, hello, prefetch=client_prefetch)
+    run = RemoteRun(request, robot, client, hello, address, lease)
     rollout._begin_remote_run(run)
     run.start()
     return run, robot
@@ -641,3 +687,251 @@ def test_request_defaults_are_safe() -> None:
     assert req.prefetch == 10
     with pytest.raises(ValueError):
         _request(5555, cameras={"front": {"type": "opencv", "rotation": 45}})
+
+
+# ------------------------------------------------------------------------------------- interactive sessions
+class HoldingModel(FakeModel):
+    """Sends the arm to one pose and keeps it there: a task that finishes and stays finished."""
+
+    def predict_chunk(self, images: dict, state: np.ndarray, task: str) -> np.ndarray:
+        super().predict_chunk(images, state, task)
+        return np.full((self.chunk_size, 6), 30.0, np.float32)
+
+
+def _start_session(port: int, robot: Any = None, **overrides: Any) -> tuple[Any, FakeFollower]:
+    run, robot = _start_run(port, robot, interactive=True, **overrides)
+    _wait_for(lambda: run.rollout_started_at is not None)
+    return run, robot
+
+
+def _send(text: str) -> dict:
+    from lelab.rollout import InferenceCommandRequest, handle_inference_command
+
+    return handle_inference_command(InferenceCommandRequest(text=text))
+
+
+def _end(completed: bool) -> dict:
+    from lelab.rollout import EndInferenceCommandRequest, handle_end_inference_command
+
+    return handle_end_inference_command(EndInferenceCommandRequest(completed=completed))
+
+
+HOME = dict(zip([f"{m}.pos" for m in MOTORS], [1.0, 2.0, 3.0, 4.0, 5.0, 6.0], strict=True))
+
+
+def test_a_session_holds_still_until_a_command_comes(policy_server) -> None:
+    from lelab import rollout
+
+    model = FakeModel()
+    run, robot = _start_session(policy_server(model))
+    time.sleep(0.3)
+    assert robot.sent == [] and model.calls == 0
+
+    status = rollout.handle_inference_status()
+    assert status["inference_active"] is True
+    assert status["duration_s"] is None  # no overall limit: the page's hung-run check stays out of the way
+    assert status["interactive"]["state"] == "ready"
+    assert status["interactive"]["commands"] == []
+    assert status["interactive"]["command_time_s"] == 60
+
+    assert rollout.handle_stop_inference()["success"] is True
+    result = rollout.handle_inference_status()
+    assert result["outcome"] == "ok"
+    assert result["interactive"]["commands"] == []
+    assert robot.disconnected
+
+
+def test_a_command_runs_with_its_text_as_the_task_until_its_time_is_up(policy_server) -> None:
+    from lelab import rollout
+
+    model = FakeModel()  # keeps moving: never settles
+    run, robot = _start_session(policy_server(model), return_between_commands=False)
+    run.request.command_time_s = 1  # the request allows 5 s or more; 1 s keeps the test short
+
+    assert _send("pick the cube")["success"] is True
+    refused = _send("and then this")
+    assert refused["status_code"] == 409 and "still running" in refused["message"]
+    _wait_for(lambda: run.commands.commands[0].status == "not_completed", timeout=6)
+
+    assert set(model.tasks) == {"pick the cube"}
+    command = rollout.handle_inference_status()["interactive"]["commands"][0]
+    assert command["how"] == "time limit"
+    assert 0.9 <= command["elapsed_s"] <= 1.6
+    _wait_for(lambda: run.commands.state() == "ready")
+    assert _send("next one")["success"] is True
+    _wait_for(lambda: "next one" in model.tasks)
+    assert rollout.handle_stop_inference()["success"] is True
+
+
+def test_done_and_stop_command_end_the_command_and_the_arm_goes_back(policy_server) -> None:
+    run, robot = _start_session(policy_server())
+
+    assert _end(True)["status_code"] == 409  # nothing running yet
+    assert _send("wave")["success"] is True
+    _wait_for(lambda: run.steps >= 5)
+    assert _end(True)["success"] is True
+    _wait_for(lambda: run.commands.state() == "ready")
+    first = run.commands.commands[0]
+    assert (first.status, first.how) == ("completed", "marked done")
+    assert robot.position == pytest.approx(list(HOME.values()))  # back at the start pose
+
+    assert _send("wave again")["success"] is True
+    steps = run.steps
+    _wait_for(lambda: run.steps >= steps + 5)
+    assert _end(False)["success"] is True
+    _wait_for(lambda: run.commands.state() == "ready")
+    second = run.commands.commands[1]
+    assert (second.status, second.how) == ("stopped", "stopped")
+    from lelab import rollout
+
+    assert rollout.handle_stop_inference()["success"] is True
+
+
+def test_the_arm_settling_completes_the_command(policy_server, monkeypatch) -> None:
+    from lelab import interactive, rollout
+
+    monkeypatch.setattr(interactive, "SETTLE_S", 0.3)
+    monkeypatch.setattr(interactive, "MIN_RUN_S", 0.1)
+    run, robot = _start_session(policy_server(HoldingModel()), return_between_commands=False)
+    assert _send("put it down")["success"] is True
+    _wait_for(lambda: run.commands.commands[0].status == "completed")
+    assert run.commands.commands[0].how == "arm settled"
+    assert robot.position == pytest.approx([30.0] * 6)  # stays where the command left it
+    assert rollout.handle_stop_inference()["success"] is True
+
+
+def test_auto_complete_can_be_turned_off(policy_server, monkeypatch) -> None:
+    from lelab import interactive, rollout
+
+    monkeypatch.setattr(interactive, "SETTLE_S", 0.2)
+    monkeypatch.setattr(interactive, "MIN_RUN_S", 0.1)
+    run, _ = _start_session(policy_server(HoldingModel()), auto_complete=False)
+    _send("put it down")
+    time.sleep(0.8)
+    assert run.commands.commands[0].status == "running"
+    assert rollout.handle_stop_inference()["success"] is True
+
+
+def test_ending_the_session_mid_command_stops_it_and_returns_home(policy_server) -> None:
+    from lelab import rollout
+
+    run, robot = _start_session(policy_server())
+    _send("pick")
+    _wait_for(lambda: run.steps >= 5)
+    assert rollout.handle_stop_inference()["success"] is True
+
+    result = rollout.handle_inference_status()
+    assert result["outcome"] == "ok"
+    assert result["returned_to_start"] is True
+    [command] = result["interactive"]["commands"]
+    assert (command["status"], command["how"]) == ("stopped", "session ended")
+    assert robot.sent[-1] == pytest.approx(HOME)
+    assert robot.disconnected
+
+
+def test_stop_command_does_not_wait_for_a_slow_first_chunk(policy_server) -> None:
+    from lelab import rollout
+
+    run, _ = _start_session(policy_server(FakeModel(delay_s=2.0)))
+    _send("pick")
+    _wait_for(
+        lambda: run.commands.commands[0].status == "pending" and run.phase == "waiting for the first chunk"
+    )
+    time.sleep(0.1)
+    started = time.time()
+    _end(False)
+    _wait_for(lambda: run.commands.commands[0].status == "stopped", timeout=1.0)
+    assert time.time() - started < 1.0
+    assert rollout.handle_stop_inference()["success"] is True
+
+
+def test_a_failed_command_ends_the_session_with_its_error(policy_server) -> None:
+    from lelab import rollout
+
+    run, robot = _start_session(policy_server(FakeModel(fail_after=1)))
+    _send("pick")
+    _wait_for(lambda: run.finished)
+
+    result = rollout.handle_inference_status()
+    assert result["outcome"] == "failed"
+    [command] = result["interactive"]["commands"]
+    assert command["status"] == "failed"
+    assert "CUDA out of memory" in command["how"]
+    assert robot.disconnected
+
+
+def test_an_idle_session_keeps_the_policy_connection(policy_server, monkeypatch) -> None:
+    from lelab import remote_policy, rollout
+
+    monkeypatch.setattr(remote_policy, "KEEPALIVE_S", 0.1)
+    model = FakeModel()
+    run, _ = _start_session(policy_server(model))
+    _wait_for(lambda: model.resets >= 4)  # one on connect, then the keepalives
+    assert model.calls == 0
+    assert rollout.handle_stop_inference()["success"] is True
+
+
+def test_commands_need_an_interactive_session(policy_server) -> None:
+    from lelab import rollout
+
+    assert _send("pick")["status_code"] == 409
+    run, _ = _start_run(policy_server())
+    refused = _send("pick")
+    assert refused["status_code"] == 409 and "isn't interactive" in refused["message"]
+    assert _end(True)["status_code"] == 409
+    assert rollout.handle_stop_inference()["success"] is True
+
+
+def test_an_interactive_video_shows_the_commands(policy_server, tmp_lerobot_home) -> None:
+    from lelab import rollout
+
+    run, _ = _start_session(policy_server(), record_video=True)
+    _send("pick")
+    _wait_for(lambda: run.steps >= 10)
+    assert run.video.caption_lines == 3
+    assert rollout.handle_stop_inference()["success"] is True
+    video = rollout.handle_inference_status()["video"]
+    assert video["error"] is None and video["frames"] > 0
+
+
+def test_a_session_switches_chunk_blending_between_commands(policy_server) -> None:
+    from lelab import rollout
+    from lelab.rollout import InferenceSettingsRequest, handle_inference_settings
+
+    # Prefetch 8: at 100 Hz the next chunk arrives with actions of this one still queued, to blend with.
+    run, _ = _start_session(policy_server(), chunk_blending=True, blend_steps=6, client_prefetch=8)
+    session = rollout.handle_inference_status()["interactive"]
+    assert (session["chunk_blending"], session["blend_steps"]) == (True, 6)
+    assert run.client.blend_steps == 6
+
+    off = handle_inference_settings(InferenceSettingsRequest(chunk_blending=False))
+    assert off["success"] is True
+    assert run.client.blend_steps == 0
+    assert rollout.handle_inference_status()["interactive"]["chunk_blending"] is False
+
+    _send("pick")
+    _wait_for(lambda: run.steps >= 3)
+    refused = handle_inference_settings(InferenceSettingsRequest(chunk_blending=True))
+    assert refused["status_code"] == 409 and "between commands" in refused["message"]
+    assert run.client.blend_steps == 0
+    _end(False)
+    _wait_for(lambda: run.commands.state() == "ready")
+
+    on = handle_inference_settings(InferenceSettingsRequest(chunk_blending=True, blend_steps=4))
+    assert on["success"] is True and on["blend_steps"] == 4
+    assert run.client.blend_steps == 4
+    _send("pick again")
+    _wait_for(lambda: run.client.blended > 0)
+    assert rollout.handle_stop_inference()["success"] is True
+
+
+def test_a_plain_run_sets_chunk_blending_only_at_the_start(policy_server) -> None:
+    from lelab import rollout
+    from lelab.rollout import InferenceSettingsRequest, handle_inference_settings
+
+    run, _ = _start_run(policy_server(), chunk_blending=True, blend_steps=5, client_prefetch=8)
+    _wait_for(lambda: run.client.blended > 0)
+    assert rollout.handle_inference_status()["remote"]["blend_steps"] == 5
+    refused = handle_inference_settings(InferenceSettingsRequest(chunk_blending=False))
+    assert refused["status_code"] == 409 and "when it starts" in refused["message"]
+    assert rollout.handle_stop_inference()["success"] is True

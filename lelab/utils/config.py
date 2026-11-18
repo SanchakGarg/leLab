@@ -54,6 +54,8 @@ REMOTE_SERVERS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/remote_se
 REMOTE_KNOWN_HOSTS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/remote_known_hosts")
 # Videos of model runs on the arm (remote inference with "Record a video").
 RUN_VIDEOS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/run_videos")
+# Output of local model runs: the lerobot-rollout subprocess, or the policy server of a local interactive session.
+INFERENCE_LOGS_PATH = os.path.expanduser("~/.cache/huggingface/lerobot/inference_logs")
 # How many episodes each recorded dataset was meant to have, one JSON per
 # dataset (`<owner>/<name>.json`). LeRobot's metadata has no such field; kept
 # outside the dataset so nothing extra is pushed to the Hub or a server.

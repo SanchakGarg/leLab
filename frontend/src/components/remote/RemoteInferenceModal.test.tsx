@@ -170,3 +170,104 @@ test("asks which cameras go in the video when there are more than two", async ()
   // The full-frame camera is never offered for the corner too.
   expect(Array.from(videoSelects()[1].options).map((o) => o.value)).not.toContain("top");
 });
+
+test("starts an interactive session: no task or duration, a time per command instead", async () => {
+  await renderAndConnect();
+  act(() => {
+    const wrist = cameraSelects()[1];
+    wrist.value = "2";
+    wrist.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(container.querySelector("#remote-task")).not.toBeNull();
+  await click(container.querySelector<HTMLButtonElement>("#remote-interactive")!);
+  expect(container.querySelector("#remote-task")).toBeNull();
+  expect(container.querySelector("#remote-duration")).toBeNull();
+  type(container.querySelector<HTMLInputElement>("#remote-command-time")!, "45");
+  await click(container.querySelector<HTMLButtonElement>("#remote-return-between")!);
+
+  vi.useFakeTimers();
+  await act(async () => {
+    button(container, "Start session").click();
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  expect(calls.find((c) => c.path === "/start-remote-inference")!.body).toMatchObject({
+    interactive: true, command_time_s: 45, return_between_commands: false, auto_complete: true, task: "",
+  });
+  expect(mocks.navigate).toHaveBeenCalledWith("/inference");
+  expect(JSON.parse(window.localStorage.getItem("lelab.runSettings.remote")!)).toMatchObject({
+    interactive: true, commandTimeS: 45, returnBetweenCommands: false,
+  });
+});
+
+const bindWrist = () =>
+  act(() => {
+    const wrist = cameraSelects()[1];
+    wrist.value = "2";
+    wrist.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+const openAdvanced = () => click(button(container, "Advanced"));
+
+const startRun = async () => {
+  vi.useFakeTimers();
+  await act(async () => {
+    Array.from(container.querySelectorAll("button")).find((b) => /^Start/.test(b.textContent ?? ""))!.click();
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  vi.useRealTimers();
+  return calls.filter((c) => c.path === "/start-remote-inference").at(-1)!.body!;
+};
+
+test("blends chunks over the chosen number of actions, and warns when prefetch leaves nothing to blend", async () => {
+  await renderAndConnect();
+  bindWrist();
+  expect(container.querySelector("#remote-chunk-blending-steps")).toBeNull();
+  await click(container.querySelector<HTMLButtonElement>("#remote-chunk-blending")!);
+  type(container.querySelector<HTMLInputElement>("#remote-chunk-blending-steps")!, "6");
+  expect(container.textContent).toContain("About 0.20 s at 30 Hz");
+  await openAdvanced();
+  type(container.querySelector<HTMLInputElement>("#remote-prefetch")!, "0");
+  expect(container.textContent).toContain("there is nothing to blend");
+  type(container.querySelector<HTMLInputElement>("#remote-prefetch")!, "4");
+  expect(container.textContent).toContain("At most 4 actions are left");
+
+  expect(await startRun()).toMatchObject({ chunk_blending: true, blend_steps: 6, prefetch: 4 });
+});
+
+test("the next run starts from the settings of the last one, cameras included", async () => {
+  await renderAndConnect();
+  bindWrist();
+  type(container.querySelector<HTMLInputElement>("#remote-task")!, "stack the cubes");
+  type(container.querySelector<HTMLInputElement>("#remote-duration")!, "90");
+  await openAdvanced();
+  type(container.querySelector<HTMLInputElement>("#remote-maxstep")!, "");
+  await click(container.querySelector<HTMLButtonElement>("#remote-chunk-blending")!);
+  const first = await startRun();
+  expect(first).toMatchObject({ task: "stack the cubes", duration_s: 90, max_relative_target: null, chunk_blending: true });
+
+  // A new dialog (the page was left and opened again): everything comes back, and still can be changed.
+  act(() => root.unmount());
+  root = createRoot(container);
+  await renderAndConnect();
+  expect(container.querySelector<HTMLInputElement>("#remote-task")!.value).toBe("stack the cubes");
+  expect(container.querySelector<HTMLInputElement>("#remote-duration")!.value).toBe("90");
+  await openAdvanced();
+  expect(container.querySelector<HTMLInputElement>("#remote-maxstep")!.value).toBe("");
+  expect(container.querySelector<HTMLButtonElement>("#remote-chunk-blending")!.getAttribute("data-state")).toBe("checked");
+  expect(cameraSelects().map((s) => s.value)).toEqual(["1", "2"]); // wrist bound again without asking
+  type(container.querySelector<HTMLInputElement>("#remote-task")!, "unstack them");
+  expect(await startRun()).toMatchObject({
+    task: "unstack them", duration_s: 90, chunk_blending: true,
+    cameras: { front: { camera_index: 1 }, wrist: { camera_index: 2 } },
+  });
+});
+
+test("cancelled changes are not remembered", async () => {
+  await renderAndConnect();
+  type(container.querySelector<HTMLInputElement>("#remote-task")!, "never started");
+  act(() => root.unmount());
+  root = createRoot(container);
+  await renderAndConnect();
+  expect(container.querySelector<HTMLInputElement>("#remote-task")!.value).toBe("");
+  expect(window.localStorage.getItem("lelab.runSettings.remote")).toBeNull();
+});

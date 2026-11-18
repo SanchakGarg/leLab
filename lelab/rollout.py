@@ -19,6 +19,11 @@ with teleoperation/recording (the follower's serial bus can only be
 opened once), `lerobot.scripts.lerobot_rollout` running as a subprocess
 for clean cancellation. Hub-checkpoint refs are resolved to a local dir
 via huggingface_hub.snapshot_download before we spawn the subprocess.
+
+Interactive sessions (`interactive=True`: commands typed one at a time while
+the arm stays connected) and runs with chunk blending don't use lerobot-rollout:
+lelab/local_policy.py serves the checkpoint with lelab/policy_server.py on this
+machine and runs lelab/remote_policy.py's loop against it, like a remote run.
 """
 
 from __future__ import annotations
@@ -35,11 +40,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from lerobot.utils.device_utils import auto_select_torch_device
 
 from .camera_config import lerobot_camera_settings, validate_camera_rotations
+from .utils import config
 from .utils.config import setup_follower_calibration_file
 from .utils.devices import follower_lock
 
@@ -53,6 +59,20 @@ class InferenceRequest(BaseModel):
     task: str = ""
     cameras: dict[str, dict[str, Any]] = {}
     duration_s: int = 60
+    # Interactive session (see the module docstring): `task` and `duration_s` are unused, the page sends
+    # commands that run for at most `command_time_s` each.
+    interactive: bool = False
+    command_time_s: int = Field(60, ge=5, le=600)
+    return_between_commands: bool = True
+    auto_complete: bool = True
+    # Crossfade into each new action chunk over its first `blend_steps` actions (remote_policy). Not something
+    # lerobot-rollout does, so a run with it goes through LeLab's own loop, like an interactive session.
+    chunk_blending: bool = False
+    blend_steps: int = Field(10, ge=1, le=200)
+    # Only runs through LeLab's own loop (interactive or blended) can record a video.
+    record_video: bool = False
+    video_camera: str | None = None
+    video_corner_camera: str | None = None
 
     @field_validator("cameras")
     @classmethod
@@ -60,10 +80,30 @@ class InferenceRequest(BaseModel):
         return validate_camera_rotations(cameras)
 
 
+class InferenceCommandRequest(BaseModel):
+    """A command for the running interactive session: the task the policy runs next."""
+
+    text: str = Field(min_length=1, max_length=500)
+
+
+class EndInferenceCommandRequest(BaseModel):
+    """Done (completed=True) or Stop command (False) for the command that is running."""
+
+    completed: bool
+
+
+class InferenceSettingsRequest(BaseModel):
+    """Settings an interactive session can change between commands."""
+
+    chunk_blending: bool
+    blend_steps: int | None = Field(None, ge=1, le=200)
+
+
 inference_active: bool = False
-# "local": the lerobot-rollout subprocess below. "remote": a lelab/remote_policy.py run, whose
-# policy runs on the user's server; it stays in _remote_run after it ends until
-# /inference-status has reported its result once.
+# "local": the lerobot-rollout subprocess below. "remote": an in-process lelab/remote_policy.py run,
+# whose policy runs on the user's server, or on this machine for a local interactive session or blended
+# run (then _remote_run is first a local_policy.LocalRunSetup, replaced by the run once the model is loaded).
+# It stays in _remote_run after it ends until /inference-status has reported its result once.
 _inference_mode: str = "local"
 _remote_run: Any = None
 _inference_proc: subprocess.Popen | None = None
@@ -357,11 +397,84 @@ def _finish_remote_run(run: Any) -> None:
             inference_active = False
 
 
+def _replace_remote_run(old: Any, new: Any) -> bool:
+    """Put `new` in the place of `old` (a local session that finished setting up); False if `old` is gone."""
+    global _remote_run
+    with _state_lock:
+        if _remote_run is not old:
+            return False
+        _remote_run = new
+        return True
+
+
+def in_process_run_active() -> bool:
+    """Whether an in-process run (remote, or a local interactive session) holds the arm."""
+    with _state_lock:
+        return _inference_mode == "remote" and _remote_run is not None and not _remote_run.finished
+
+
+def _start_local_policy_run(request: InferenceRequest) -> dict[str, Any]:
+    """Start a local checkpoint in LeLab's own loop (interactive or blended); the model loads in the background."""
+    from .local_policy import LocalRunSetup
+    from .remote_ssh import RemoteServerError
+
+    refused = _claim_inference_slot()
+    if refused is not None:
+        return refused
+    try:
+        policy_path = _resolve_policy_path(request.policy_ref)
+        setup = LocalRunSetup(request, policy_path)
+        setup.start()
+    except Exception as exc:
+        _release_inference_slot()
+        if isinstance(exc, RemoteServerError):
+            return {"success": False, "status_code": exc.status_code, "message": exc.message}
+        if isinstance(exc, ValidationError):
+            problems = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+            return {"success": False, "status_code": 400, "message": f"Invalid run settings: {problems}"}
+        logger.exception("Failed to start the local run")
+        return {"success": False, "status_code": 500, "message": f"Failed to start the run: {exc}"}
+    _begin_remote_run(setup)
+    what = "Interactive session" if request.interactive else "Run with chunk blending"
+    logger.info("%s starting: policy=%s log=%s", what, policy_path, setup.log_path)
+    return {"success": True, "message": f"{what} starting", "log_path": str(setup.log_path)}
+
+
+def _interactive_run() -> Any:
+    with _state_lock:
+        run = _remote_run if _inference_mode == "remote" else None
+    return run if run is not None and not run.finished else None
+
+
+def handle_inference_command(request: InferenceCommandRequest) -> dict[str, Any]:
+    run = _interactive_run()
+    if run is None:
+        return {"success": False, "status_code": 409, "message": "No interactive session is running."}
+    return run.submit_command(request.text)
+
+
+def handle_end_inference_command(request: EndInferenceCommandRequest) -> dict[str, Any]:
+    run = _interactive_run()
+    if run is None:
+        return {"success": False, "status_code": 409, "message": "No interactive session is running."}
+    return run.end_command(request.completed)
+
+
+def handle_inference_settings(request: InferenceSettingsRequest) -> dict[str, Any]:
+    run = _interactive_run()
+    if run is None:
+        return {"success": False, "status_code": 409, "message": "No interactive session is running."}
+    return run.update_settings(request.chunk_blending, request.blend_steps)
+
+
 def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
     """Start a one-shot rollout subprocess. Returns a dict — the route
     layer turns it into a JSON response or HTTPException as appropriate."""
     global inference_active, _inference_proc, _inference_started_at
     global _inference_rollout_started_at, _inference_meta, _inference_mode, _remote_run
+
+    if request.interactive or request.chunk_blending:
+        return _start_local_policy_run(request)
 
     refused = _claim_inference_slot()
     if refused is not None:
@@ -398,7 +511,7 @@ def handle_start_inference(request: InferenceRequest) -> dict[str, Any]:
         if request.cameras:
             cmd.append(f"--robot.cameras={_format_cameras_arg(request.cameras)}")
 
-        log_dir = Path.home() / ".cache" / "huggingface" / "lerobot" / "inference_logs"
+        log_dir = Path(config.INFERENCE_LOGS_PATH)
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{int(time.time())}.log"
         log_handle = log_path.open("w", buffering=1)

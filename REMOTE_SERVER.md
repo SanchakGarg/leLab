@@ -167,6 +167,39 @@ How it keeps the arm moving:
 - It drops the actions already played while a request was out, so each new chunk lines up with the present.
 - **Actions per chunk** replans more often.
 
+## Chunk blending
+
+Models like ACT, SmolVLA and pi0.5 don't predict one action at a time. They predict a **chunk**, a short plan of the next actions (50 for ACT, at 30 actions a second). LeLab plays the chunk and asks for the next one before it runs out.
+
+Each new chunk is planned from a newer camera image, so where it starts rarely matches exactly where the old chunk was heading. Without blending, the new chunk takes over at once, and the arm can jerk or stutter at every switch. You notice it most when the model is unsure.
+
+**Blend chunks** fades from one chunk to the next instead. For the first actions of the new chunk (**Blend over**, 10 by default, about a third of a second), each action LeLab plays is a mix of the two chunks. It starts mostly as the old chunk and ends fully as the new one:
+
+```
+old chunk, not played yet:   o1   o2   o3   o4 …
+new chunk:                   n1   n2   n3   n4 …
+played, blend over 3:        ¾o1+¼n1   ½o2+½n2   ¼o3+¾n3   n4 …
+```
+
+- **Smoother but slower to react.** A longer blend gives smoother motion, but the arm follows a correction from the model a little later. Turn blending off when the model must react fast, for example when catching something.
+- **Prefetch limits it.** Only the old actions not yet played can be blended, and that is at most **Prefetch** (under Advanced, 10 by default). With Prefetch 0, each chunk plays to its end before the next arrives, so there is nothing to blend.
+- **Where to set it.** Set it in the start dialog of any run. An interactive session can also switch it on the Inference page between commands (it is locked while a command runs).
+- **Local runs.** Blending is part of LeLab's own control loop, and `lerobot-rollout` doesn't do it. A local run with blending on therefore runs like an interactive session: the checkpoint is served on this computer and LeLab plays it. Such a run can record a video too.
+- **While it runs**, the Inference page shows how many actions were blended.
+
+## Settings are remembered
+
+Both start dialogs (**Run model on server**, and a checkpoint's **Play**) save their settings when you click **Start** and fill them in the next time:
+
+- the task and duration
+- the interactive session options
+- chunk blending
+- the Advanced values
+- which camera you bound to each of the model's cameras, and any rotation you picked
+- the video layout
+
+Change anything before starting; settings you change and then cancel are not kept. A remembered camera that is unplugged is skipped. Bind that one again yourself, or LeLab falls back to a robot camera with the same name.
+
 ## Record a video of the run
 
 Tick **Record a video of the run** before you start. LeLab saves an mp4 of what the model's cameras saw, with one camera full frame and another inset in the bottom-right corner.
@@ -178,6 +211,27 @@ Tick **Record a video of the run** before you start. LeLab saves an mp4 of what 
 The video covers the run from the first action to the last, at the control rate. It is written on this computer while the arm moves, without slowing the arm down: if encoding falls behind, frames are dropped.
 
 When the run ends, the Inference page plays the video and offers **Download**. The files are in `~/.cache/huggingface/lerobot/run_videos/`, named after the date, time and checkpoint folder (`20261117_120000_act_pick_cube.mp4`).
+
+## Interactive sessions: one command at a time
+
+Tick **Interactive session** in the start dialog. This works in **Run model on server** and in a checkpoint's local **Play** dialog. There is no task or duration to set up front. Instead, the arm connects once and waits.
+
+1. **Type a command** at the bottom of the Inference page (`pick up the red cube`) and press **Enter**. The model runs with that command as its task.
+2. **The command ends** in one of these ways:
+   - **Done**: the arm moved and then stayed still for about 3 seconds, or you pressed **Done**.
+   - **Didn't complete**: the **time per command** (60 s by default) ran out.
+   - **Stopped**: you pressed **Stop command**.
+3. **Between commands** the arm goes back to its start pose by default. Untick **Return to the start pose after each command** to let the next command start where the last one ended, so that `put it in the bowl` can follow `pick up the cube`. Going back to the start pose also opens the gripper.
+4. **End session** returns the arm to where it started and releases it.
+
+The page lists every command with its result, newest at the bottom, and scrolls back through all of them. With **Record a video** ticked, the video has a strip under the picture with the last three commands and their results. When a fourth command starts, the oldest one leaves the video but stays in the page's list.
+
+A few things to know:
+
+- **Only language-conditioned models use the command text.** SmolVLA and pi0.5 do; ACT ignores it and runs the same skill for every command.
+- **"The arm stopped moving" is a guess.** The model can't tell when a task is finished, so a model that pauses mid-task looks done. Untick **Count a command as done when the arm stops moving** and use **Done** if that happens. Time the arm spends waiting for the server doesn't count as stopping.
+- **Chunk blending** can be switched on the Inference page between commands, and applies from the next command (see [Chunk blending](#chunk-blending)).
+- **Local sessions** load the checkpoint once, in LeLab's policy server on this computer (`127.0.0.1`), and use the same control loop as server runs. That is also how they can record a video. The server's log is in `~/.cache/huggingface/lerobot/inference_logs/`. The server stops with the session, and with LeLab, even if LeLab is killed.
 
 ## Safety
 

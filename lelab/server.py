@@ -79,10 +79,17 @@ from .replay import (
     handle_stop_replay,
 )
 from .rollout import (
+    EndInferenceCommandRequest,
+    InferenceCommandRequest,
     InferenceRequest,
+    InferenceSettingsRequest,
+    handle_end_inference_command,
+    handle_inference_command,
+    handle_inference_settings,
     handle_inference_status,
     handle_start_inference,
     handle_stop_inference,
+    in_process_run_active,
 )
 
 # Import our custom teleoperation functionality
@@ -432,6 +439,42 @@ def stop_inference():
 @app.get("/inference-status")
 def inference_status():
     return handle_inference_status()
+
+
+@app.post("/inference-command")
+def inference_command(request: InferenceCommandRequest):
+    """Run a command (the policy's task) in the interactive session."""
+    result = handle_inference_command(request)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to send the command"),
+        )
+    return result
+
+
+@app.post("/inference-command/end")
+def end_inference_command(request: EndInferenceCommandRequest):
+    """Done (completed) or Stop command for the interactive session's running command."""
+    result = handle_end_inference_command(request)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to end the command"),
+        )
+    return result
+
+
+@app.post("/inference-settings")
+def inference_settings(request: InferenceSettingsRequest):
+    """Switch chunk blending of the interactive session, between commands."""
+    result = handle_inference_settings(request)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=result.get("status_code", 500),
+            detail=result.get("message", "Failed to change the settings"),
+        )
+    return result
 
 
 @app.get("/health")
@@ -1642,8 +1685,9 @@ async def shutdown_event():
 
     _record.stop_recording_and_wait()
     with contextlib.suppress(Exception):
-        # A remote-policy run returns the arm to its start pose and releases it.
-        if handle_inference_status().get("mode") == "remote":
+        # An in-process run (remote, or a local interactive session) returns the arm to its start pose
+        # and releases it; a local session's policy server goes with it.
+        if in_process_run_active():
             handle_stop_inference()
     remote_upload.cancel_and_wait()
     remote_ssh.close_all()

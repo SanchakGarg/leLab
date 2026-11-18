@@ -45,6 +45,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   container = document.createElement("div"); root = createRoot(container);
   mocks.fetcher.mockReset(); mocks.navigate.mockReset(); mocks.toast.mockReset();
+  window.localStorage.clear();
   mocks.fetcher.mockImplementation(async (url: string) => new Response(JSON.stringify(
     url.endsWith("/checkpoints") ? { checkpoints: [{ step: 10, source: "local", ref: "checkpoint" }] }
       : url.endsWith("/policy-config") ? { policy_type: "act", requires_task: false, image_features: { wrist: { width: 480, height: 640 }, top: { width: 640, height: 480 } } }
@@ -62,7 +63,7 @@ async function render(record = robot) {
 }
 async function start() {
   vi.useFakeTimers();
-  const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes("Start Inference"))!;
+  const button = Array.from(container.querySelectorAll("button")).find((item) => /Start (Inference|session)/.test(item.textContent ?? ""))!;
   await act(async () => { button.click(); await vi.advanceTimersByTimeAsync(300); });
   const call = mocks.fetcher.mock.calls.find(([url]) => url.endsWith("/start-inference"));
   return call ? JSON.parse(call[1].body) : null;
@@ -108,4 +109,59 @@ test("an invalid saved rotation blocks inference and gives a visible correction 
   const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes("Start Inference"))! as HTMLButtonElement;
   expect(button.disabled).toBe(true);
   expect(await start()).toBeNull();
+});
+
+test("an interactive session sends commands later, with an optional video of the session", async () => {
+  await render();
+  expect(container.querySelector("#durationS")).not.toBeNull();
+  expect(container.querySelector("#local-record-video")).toBeNull(); // a plain local run records nothing
+  await act(async () => container.querySelector<HTMLButtonElement>("#local-interactive")!.click());
+  expect(container.querySelector("#durationS")).toBeNull();
+  expect(container.textContent).toContain("This model (act) doesn't read text");
+  await act(async () => container.querySelector<HTMLButtonElement>("#local-record-video")!.click());
+  expect(container.textContent).toContain("top (wrist) full frame, wrist (top) in the corner"); // the fixture binds them crossed
+
+  vi.useFakeTimers();
+  const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes("Start session"))!;
+  await act(async () => { button.click(); await vi.advanceTimersByTimeAsync(300); });
+  const request = JSON.parse(mocks.fetcher.mock.calls.find(([url]) => url.endsWith("/start-inference"))![1].body);
+  expect(request).toMatchObject({
+    interactive: true, command_time_s: 60, return_between_commands: true, auto_complete: true,
+    record_video: true, video_camera: "top", video_corner_camera: "wrist", task: "",
+  });
+  expect(mocks.navigate).toHaveBeenCalledWith("/inference");
+});
+
+test("chunk blending on a plain local run goes through LeLab's own loop, which can also record", async () => {
+  await render();
+  expect(container.querySelector("#local-record-video")).toBeNull();
+  await act(async () => container.querySelector<HTMLButtonElement>("#local-chunk-blending")!.click());
+  expect(container.textContent).toContain("lerobot-rollout doesn't blend chunks");
+  expect(container.querySelector("#durationS")).not.toBeNull(); // still a plain run, with its duration
+  expect(container.querySelector("#local-record-video")).not.toBeNull();
+  const steps = container.querySelector<HTMLInputElement>("#local-chunk-blending-steps")!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  act(() => { setter.call(steps, "4"); steps.dispatchEvent(new Event("input", { bubbles: true })); });
+
+  const request = await start();
+  expect(request).toMatchObject({ chunk_blending: true, blend_steps: 4, duration_s: 60 });
+  expect(request.interactive).toBeUndefined();
+  expect(JSON.parse(window.localStorage.getItem("lelab.runSettings.local")!)).toMatchObject({
+    chunkBlending: true, blendSteps: 4,
+  });
+});
+
+test("the dialog opens with the last run's settings and bindings", async () => {
+  window.localStorage.setItem("lelab.runSettings.local", JSON.stringify({
+    durationS: 45, interactive: true, commandTimeS: 30, chunkBlending: true, blendSteps: 8,
+    cameras: { wrist: { device_id: "usb-manual", camera_index: 3 } },
+  }));
+  await render();
+  expect(container.querySelector<HTMLInputElement>("#local-command-time")!.value).toBe("30");
+  expect(container.querySelector<HTMLInputElement>("#local-chunk-blending-steps")!.value).toBe("8");
+  // wrist comes back on the camera it had (manual, #3) rather than the robot's own wrist camera
+  expect(bindings().map((select) => select.value)).toEqual(["3", "1"]);
+  const request = await start();
+  expect(request).toMatchObject({ interactive: true, command_time_s: 30, chunk_blending: true, blend_steps: 8 });
+  expect(request.cameras.wrist).toMatchObject({ camera_index: 3 });
 });

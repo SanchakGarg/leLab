@@ -25,7 +25,17 @@ import {
 import { startInference } from "@/lib/inferenceApi";
 import CheckpointDropdown from "@/components/jobs/CheckpointDropdown";
 import { useCameraBindings } from "@/hooks/useCameraBindings";
+import {
+  LOCAL_RUN_SETTINGS_KEY,
+  blendingRequest,
+  interactiveRequest,
+  useRunSettings,
+} from "@/hooks/useRunSettings";
+import { useRunVideo } from "@/hooks/useRunVideo";
 import { cameraConfigurationError } from "@/lib/cameraConfig";
+import ChunkBlendingOption from "@/components/inference/ChunkBlendingOption";
+import InteractiveOptions from "@/components/inference/InteractiveOptions";
+import RunVideoOptions from "@/components/remote/RunVideoOptions";
 import CameraBindings from "./CameraBindings";
 
 interface Props {
@@ -73,15 +83,29 @@ const InferenceModal: React.FC<Props> = ({
 
   const [checkpoints, setCheckpoints] = useState<JobCheckpoint[]>([]);
   const [selectedStep, setSelectedStep] = useState<number | null>(initialStep);
-  const [task, setTask] = useState("");
-  const [durationS, setDurationS] = useState(60);
   const [submitting, setSubmitting] = useState(false);
+  // Prefilled from the last local run each time the dialog opens; saved when a run starts.
+  const { settings, update, save } = useRunSettings(LOCAL_RUN_SETTINGS_KEY, open);
 
   const [policyConfig, setPolicyConfig] = useState<PolicyConfigSummary | null>(null);
   const [policyConfigLoading, setPolicyConfigLoading] = useState(false);
   const [policyConfigError, setPolicyConfigError] = useState<string | null>(null);
 
-  const cameraBindings = useCameraBindings(policyConfig?.image_features ?? null, robot, open);
+  const cameraBindings = useCameraBindings(policyConfig?.image_features ?? null, robot, open, settings);
+  const isInteractive = settings.interactive;
+  // A plain run is a lerobot-rollout process, which neither blends chunks nor records; a session or a
+  // run with chunk blending goes through LeLab's own loop, which does both.
+  const ownLoop = isInteractive || settings.chunkBlending;
+  const policyCameras = Object.keys(policyConfig?.image_features ?? {});
+  const boundName = (camera: string) => {
+    const index = cameraBindings.bindings[camera];
+    return index == null ? null : robot?.cameras?.find((c) => c.camera_index === index)?.name;
+  };
+  const video = useRunVideo(policyCameras, boundName, settings.videoChoice);
+  const { choose: chooseVideo } = video;
+  useEffect(() => {
+    if (open) chooseVideo(null); // back to the remembered pick each time the dialog opens
+  }, [open, chooseVideo]);
 
   // Load checkpoints when modal opens.
   useEffect(() => {
@@ -162,10 +186,14 @@ const InferenceModal: React.FC<Props> = ({
         follower_port: robot.follower_port,
         follower_config: robot.follower_config,
         policy_ref: selectedRef,
-        task,
+        task: isInteractive ? "" : settings.task,
         cameras: cameraBindings.toCameraDict(DEFAULT_FPS),
-        duration_s: durationS,
+        duration_s: settings.durationS,
+        ...interactiveRequest(settings),
+        ...blendingRequest(settings),
+        ...(ownLoop ? video.request : {}),
       });
+      save({ ...cameraBindings.remember(), videoChoice: video.choice });
       onOpenChange(false);
       navigate("/inference");
     } catch (e) {
@@ -195,8 +223,10 @@ const InferenceModal: React.FC<Props> = ({
 
         <div className="space-y-6 py-4">
           <DialogDescription className="text-gray-400 text-base leading-relaxed text-center">
-            Pick a checkpoint and confirm hardware. The selected policy will
-            drive the follower autonomously for the configured duration.
+            Pick a checkpoint and confirm hardware.{" "}
+            {isInteractive
+              ? "The model loads once; then each command you type runs on the follower."
+              : "The selected policy will drive the follower autonomously for the configured duration."}
           </DialogDescription>
           {policyConfig && !BUILTIN_POLICY_TYPES.has(policyConfig.policy_type ?? "") && (
             <p className="text-xs text-gray-500 text-center -mt-3">
@@ -258,37 +288,59 @@ const InferenceModal: React.FC<Props> = ({
             <h3 className="text-lg font-semibold text-white border-b border-gray-700 pb-2">
               Run parameters
             </h3>
-            {policyConfig?.requires_task ? (
-              <div className="space-y-2">
-                <Label htmlFor="task" className="text-sm font-medium text-gray-300">
-                  Task description
-                </Label>
-                <Input
-                  id="task"
-                  value={task}
-                  onChange={(e) => setTask(e.target.value)}
-                  placeholder="e.g., pick up the red block"
-                  className="bg-gray-800 border-gray-700 text-white"
-                />
-                <p className="text-xs text-gray-500">
-                  This policy is language-conditioned ({policyConfig.policy_type}).
-                </p>
-              </div>
-            ) : null}
-            <div className="space-y-2">
-              <Label htmlFor="durationS" className="text-sm font-medium text-gray-300">
-                Max duration (seconds)
-              </Label>
-              <NumberInput
-                id="durationS"
-                min={1}
-                value={durationS}
-                onChange={(v) => {
-                  if (v !== undefined) setDurationS(v);
-                }}
-                className="bg-gray-800 border-gray-700 text-white"
-              />
-            </div>
+            <InteractiveOptions
+              idPrefix="local"
+              settings={settings}
+              onChange={update}
+              ignoresTextType={policyConfig && !policyConfig.requires_task ? policyConfig.policy_type : null}
+            />
+            {isInteractive ? null : (
+              <>
+                {policyConfig?.requires_task ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="task" className="text-sm font-medium text-gray-300">
+                      Task description
+                    </Label>
+                    <Input
+                      id="task"
+                      value={settings.task}
+                      onChange={(e) => update({ task: e.target.value })}
+                      placeholder="e.g., pick up the red block"
+                      className="bg-gray-800 border-gray-700 text-white"
+                    />
+                    <p className="text-xs text-gray-500">
+                      This policy is language-conditioned ({policyConfig.policy_type}).
+                    </p>
+                  </div>
+                ) : null}
+                <div className="space-y-2">
+                  <Label htmlFor="durationS" className="text-sm font-medium text-gray-300">
+                    Max duration (seconds)
+                  </Label>
+                  <NumberInput
+                    id="durationS"
+                    min={1}
+                    value={settings.durationS}
+                    onChange={(v) => {
+                      if (v !== undefined) update({ durationS: v });
+                    }}
+                    className="bg-gray-800 border-gray-700 text-white"
+                  />
+                </div>
+              </>
+            )}
+            <ChunkBlendingOption
+              id="local-chunk-blending"
+              settings={settings}
+              onChange={update}
+              fps={DEFAULT_FPS}
+              note={
+                isInteractive
+                  ? "You can also switch it between commands on the session page."
+                  : "The run goes through LeLab's own control loop, with the model in a policy server on this computer: lerobot-rollout doesn't blend chunks."
+              }
+            />
+            {ownLoop ? <RunVideoOptions id="local-record-video" video={video} what={isInteractive ? "session" : "run"} /> : null}
           </div>
 
           <div className="space-y-4">
@@ -343,7 +395,7 @@ const InferenceModal: React.FC<Props> = ({
               className="w-full sm:w-auto bg-green-500 hover:bg-green-600 text-white px-10 py-6 text-lg disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Play className="w-5 h-5 mr-2" />
-              {submitting ? "Starting…" : "Start Inference"}
+              {submitting ? "Starting…" : isInteractive ? "Start session" : "Start Inference"}
             </Button>
             <Button
               onClick={() => onOpenChange(false)}

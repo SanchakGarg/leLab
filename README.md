@@ -76,6 +76,8 @@ Train on a GPU machine you reach over SSH, such as a workstation, a cloud VM or 
 3. Train there with `lerobot-train`.
 4. Start `lelab_policy_server.py` with the trained checkpoint. LeLab copies the script for you.
 5. In **Jobs → Run model on server**, enter the IP and port its log prints. LeLab tunnels through your SSH login, and the model drives the real follower from the server. Tick **Record a video of the run** to save an mp4 with the wrist camera in a corner.
+6. Or tick **Interactive session** to type commands one at a time. Each one runs for up to 60 s, and the page and the video show whether it was done. This also works with local checkpoints.
+7. Tick **Blend chunks** to smooth the switch from one predicted action chunk to the next. Both start dialogs remember your settings for the next run.
 
 Your password is never saved. The step-by-step guide, a Slurm example and the safety limits are in [REMOTE_SERVER.md](REMOTE_SERVER.md).
 

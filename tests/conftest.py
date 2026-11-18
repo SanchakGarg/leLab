@@ -73,6 +73,7 @@ def tmp_lerobot_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(cfg, "REMOTE_SERVERS_PATH", str(cache / "remote_servers"))
     monkeypatch.setattr(cfg, "REMOTE_KNOWN_HOSTS_PATH", str(cache / "remote_known_hosts"))
     monkeypatch.setattr(cfg, "RUN_VIDEOS_PATH", str(cache / "run_videos"))
+    monkeypatch.setattr(cfg, "INFERENCE_LOGS_PATH", str(cache / "inference_logs"))
     monkeypatch.setattr(cfg, "RECORDING_TARGETS_PATH", str(cache / "recording_targets"))
 
     return cache

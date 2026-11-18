@@ -56,6 +56,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import socket
 import struct
 import sys
@@ -69,7 +70,7 @@ import numpy as np
 
 # The version of LeLab's server-side files (this script and the Slurm kit). Bump it whenever any of them changes:
 # `python lelab_policy_server.py --version` and the `# lelab-kit-version:` line in slurm/* show what a server has.
-LELAB_KIT_VERSION = "2026.11.18-2"
+LELAB_KIT_VERSION = "2026.11.18-4"
 PROTOCOL = 1
 DEFAULT_PORT = 5555
 FPS = 30
@@ -409,6 +410,30 @@ def serve(agent: Any, srv: socket.socket, hello: dict[str, Any], stop: threading
         threading.Thread(target=run, args=(conn, peer), name="policy-client", daemon=True).start()
 
 
+def exit_when_stdin_closes(fd: int | None = None, exit_fn: Any = os._exit) -> threading.Thread:
+    """Exit the process once file descriptor `fd` (stdin) reaches end of file.
+
+    LeLab runs this server on its own machine for interactive sessions with a pipe as stdin and never writes
+    to it: the pipe closes when LeLab ends the session or LeLab itself dies, so the server never outlives it.
+    It reads the raw descriptor: a thread blocked in sys.stdin's buffered reader holds its lock, and Python
+    aborts when it exits (on an error, say) while that lock is held.
+    """
+    fd = sys.stdin.fileno() if fd is None else fd
+
+    def watch() -> None:
+        with contextlib.suppress(OSError):
+            while os.read(fd, 1 << 16):
+                pass
+        # When LeLab died, stdout is a pipe nobody reads any more: the print fails, and must not stop the exit.
+        with contextlib.suppress(Exception):
+            print("stdin closed; exiting", flush=True)
+        exit_fn(0)
+
+    thread = threading.Thread(target=watch, name="stdin-watch", daemon=True)
+    thread.start()
+    return thread
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"lelab_policy_server {LELAB_KIT_VERSION}")
@@ -428,7 +453,14 @@ def main(argv: list[str] | None = None) -> None:
         help="tell clients to play only the first N actions of each chunk (default: the checkpoint's)",
     )
     ap.add_argument("--no-warmup", action="store_true", help="skip the warm-up inferences")
+    ap.add_argument(
+        "--watch-stdin",
+        action="store_true",
+        help="exit when stdin closes (how LeLab runs it on its own machine, so it never outlives LeLab)",
+    )
     a = ap.parse_args(argv)
+    if a.watch_stdin:
+        exit_when_stdin_closes()
 
     device = pick_device(a.device)
     print(f"loading {a.policy} on {device}...", flush=True)

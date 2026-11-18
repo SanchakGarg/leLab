@@ -1,6 +1,7 @@
 import { ApiError, Fetcher, apiRequest } from "./apiClient";
 import { CameraRequest } from "./cameraConfig";
 import { ImageFeatures } from "./checkpointsApi";
+import type { BlendingRequestFields, InteractiveRequestFields, RunVideoRequestFields } from "./inferenceApi";
 
 /** How LeLab logs into a server. Passwords are sent to connect and never saved. */
 export type RemoteAuth = "password" | "key" | "agent";
@@ -252,7 +253,11 @@ export async function probePolicyServer(
   });
 }
 
-export interface StartRemoteInferenceRequest extends PolicyConnection {
+export interface StartRemoteInferenceRequest
+  extends PolicyConnection,
+    InteractiveRequestFields,
+    BlendingRequestFields,
+    RunVideoRequestFields {
   follower_port: string;
   follower_config: string;
   task: string;
@@ -262,10 +267,6 @@ export interface StartRemoteInferenceRequest extends PolicyConnection {
   n_action_steps?: number | null;
   prefetch?: number;
   max_relative_target?: number | null;
-  /** Record a video: `video_camera` full frame, `video_corner_camera` inset in a corner (policy camera names). */
-  record_video?: boolean;
-  video_camera?: string | null;
-  video_corner_camera?: string | null;
 }
 
 export async function startRemoteInference(

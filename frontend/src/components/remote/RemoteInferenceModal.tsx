@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, CheckCircle, ChevronDown, Loader2, Play, PlugZap, Server, Video } from "lucide-react";
+import { AlertTriangle, CheckCircle, ChevronDown, Loader2, Play, PlugZap, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NumberInput } from "@/components/ui/number-input";
@@ -23,13 +22,21 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import CameraBindings from "@/components/landing/CameraBindings";
+import ChunkBlendingOption from "@/components/inference/ChunkBlendingOption";
+import InteractiveOptions from "@/components/inference/InteractiveOptions";
 import { useApi } from "@/contexts/ApiContext";
 import { useRemoteServers } from "@/contexts/RemoteServerContext";
 import { useCameraBindings } from "@/hooks/useCameraBindings";
+import {
+  REMOTE_RUN_SETTINGS_KEY,
+  blendingRequest,
+  interactiveRequest,
+  useRunSettings,
+} from "@/hooks/useRunSettings";
+import { useRunVideo } from "@/hooks/useRunVideo";
 import { useToast } from "@/hooks/use-toast";
 import { RobotRecord } from "@/hooks/useRobots";
 import { cameraConfigurationError } from "@/lib/cameraConfig";
-import { defaultVideoLayout } from "@/lib/runVideo";
 import {
   PolicyConnectionKind,
   PolicyHello,
@@ -39,6 +46,7 @@ import {
   startRemoteInference,
 } from "@/lib/remoteApi";
 import RemoteServerDialog from "./RemoteServerDialog";
+import RunVideoOptions from "./RunVideoOptions";
 import ServerConnectForm from "./ServerConnectForm";
 
 interface Props {
@@ -48,16 +56,6 @@ interface Props {
 }
 
 const LAST_KEY = "lelab.remotePolicy";
-const VIDEO_KEY = "lelab.recordRunVideo";
-const NO_CORNER = "__none__";
-
-const readRecordVideo = () => {
-  try {
-    return window.localStorage.getItem(VIDEO_KEY) === "1";
-  } catch {
-    return false;
-  }
-};
 
 interface LastTarget {
   connection: PolicyConnectionKind;
@@ -92,16 +90,10 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
   const [hello, setHello] = useState<PolicyHello | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
-  const [task, setTask] = useState("");
-  const [durationS, setDurationS] = useState(60);
-  const [maxStep, setMaxStep] = useState<number | undefined>(20);
-  const [nActionSteps, setNActionSteps] = useState<number | undefined>(undefined);
-  const [prefetch, setPrefetch] = useState(10);
   const [submitting, setSubmitting] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [recordVideo, setRecordVideo] = useState(readRecordVideo);
-  // The user's own pick of cameras for the video; null: the default layout.
-  const [videoChoice, setVideoChoice] = useState<{ main: string; corner: string | null } | null>(null);
+  // Prefilled from the last run on a server each time the dialog opens; saved when a run starts.
+  const { settings, update, save } = useRunSettings(REMOTE_RUN_SETTINGS_KEY, open);
 
   useEffect(() => {
     if (!open) return;
@@ -112,35 +104,25 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
     setHello(null);
     setProbeError(null);
     setSubmitting(false);
-    setVideoChoice(null);
   }, [open]);
 
   const imageFeatures = useMemo(
     () => (hello ? imageFeaturesFromHello(hello, robot?.cameras ?? []) : null),
     [hello, robot?.cameras],
   );
-  const cameraBindings = useCameraBindings(imageFeatures, robot, open && !!hello);
+  const cameraBindings = useCameraBindings(imageFeatures, robot, open && !!hello, settings);
   const cameraError = robot ? cameraConfigurationError(robot.cameras ?? []) : null;
   const policyCameras = hello?.cameras ?? [];
   const boundName = (camera: string) => {
     const index = cameraBindings.bindings[camera];
     return index == null ? null : robot?.cameras?.find((c) => c.camera_index === index)?.name;
   };
-  const videoDefaults = defaultVideoLayout(policyCameras, boundName);
-  const videoMain = videoChoice?.main ?? videoDefaults.main;
-  const videoCorner = videoChoice ? videoChoice.corner : videoDefaults.corner;
-  const cameraLabel = (camera: string) => {
-    const bound = boundName(camera);
-    return bound && bound !== camera ? `${camera} (${bound})` : camera;
-  };
-  const toggleRecordVideo = (value: boolean) => {
-    setRecordVideo(value);
-    try {
-      window.localStorage.setItem(VIDEO_KEY, value ? "1" : "0");
-    } catch {
-      // storage unavailable
-    }
-  };
+  const video = useRunVideo(policyCameras, boundName, settings.videoChoice);
+  const { choose: chooseVideo } = video;
+  useEffect(() => {
+    if (open) chooseVideo(null); // back to the remembered pick each time the dialog opens
+  }, [open, chooseVideo]);
+  const isInteractive = settings.interactive;
   const tunnel = connection === "tunnel";
   const serverReady = !tunnel || !!selected?.session.connected;
   const target = {
@@ -183,17 +165,18 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
         ...target,
         follower_port: robot.follower_port,
         follower_config: robot.follower_config,
-        task,
+        task: isInteractive ? "" : settings.task,
         cameras: cameraBindings.toCameraDict(fps),
-        duration_s: durationS,
+        duration_s: settings.durationS,
         fps,
-        n_action_steps: nActionSteps ?? null,
-        prefetch,
-        max_relative_target: maxStep ?? null,
-        record_video: recordVideo && !!videoMain,
-        video_camera: recordVideo ? videoMain : null,
-        video_corner_camera: recordVideo ? videoCorner : null,
+        n_action_steps: settings.nActionSteps,
+        prefetch: settings.prefetch,
+        max_relative_target: settings.maxStep,
+        ...video.request,
+        ...interactiveRequest(settings),
+        ...blendingRequest(settings),
       });
+      save({ ...cameraBindings.remember(), videoChoice: video.choice });
       onOpenChange(false);
       navigate("/inference");
     } catch (e) {
@@ -375,99 +358,48 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
 
                 <section className="space-y-3">
                   <h3 className="text-lg font-semibold text-white border-b border-gray-700 pb-2">Run</h3>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="remote-task" className="text-sm text-gray-300">Task (for language-conditioned models)</Label>
-                    <Input
-                      id="remote-task"
-                      value={task}
-                      onChange={(e) => setTask(e.target.value)}
-                      placeholder="e.g., pick up the red block"
-                      className="bg-gray-800 border-gray-700 text-white"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="remote-duration" className="text-sm text-gray-300">Max duration (seconds)</Label>
-                    <NumberInput
-                      id="remote-duration"
-                      min={1}
-                      value={durationS}
-                      onChange={(v) => {
-                        if (v !== undefined) setDurationS(v);
-                      }}
-                      className="bg-gray-800 border-gray-700 text-white"
-                    />
-                  </div>
-                  <div className="space-y-3 rounded-md border border-gray-800 p-3">
-                    <div className="flex items-start gap-3">
-                      <Checkbox
-                        id="remote-record-video"
-                        checked={recordVideo && policyCameras.length > 0}
-                        disabled={policyCameras.length === 0}
-                        onCheckedChange={(value) => toggleRecordVideo(value === true)}
-                        className="mt-0.5 border-gray-500 data-[state=checked]:bg-emerald-500 data-[state=checked]:border-emerald-500"
-                      />
-                      <div className="space-y-1">
-                        <Label htmlFor="remote-record-video" className="flex items-center gap-1.5 text-sm font-medium text-gray-200 cursor-pointer">
-                          <Video className="h-4 w-4" />
-                          Record a video of the run
-                        </Label>
-                        <p className="text-xs text-gray-500">
-                          {policyCameras.length === 0
-                            ? "This model uses no camera, so there is nothing to record."
-                            : recordVideo && videoDefaults.obvious && videoMain
-                              ? `${cameraLabel(videoMain)} full frame${videoCorner ? `, ${cameraLabel(videoCorner)} in the corner` : ""}. Saved on this computer; you can watch it when the run ends.`
-                              : "Saved on this computer as an mp4; you can watch it when the run ends."}
-                        </p>
+                  <InteractiveOptions idPrefix="remote" settings={settings} onChange={update} />
+                  {isInteractive ? null : (
+                    <>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="remote-task" className="text-sm text-gray-300">Task (for language-conditioned models)</Label>
+                        <Input
+                          id="remote-task"
+                          value={settings.task}
+                          onChange={(e) => update({ task: e.target.value })}
+                          placeholder="e.g., pick up the red block"
+                          className="bg-gray-800 border-gray-700 text-white"
+                        />
                       </div>
-                    </div>
-                    {recordVideo && policyCameras.length > 0 && !videoDefaults.obvious ? (
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div className="space-y-1.5">
-                          <Label className="text-xs text-gray-400">Full view</Label>
-                          <Select
-                            value={videoMain ?? ""}
-                            onValueChange={(main) =>
-                              setVideoChoice({ main, corner: videoCorner === main ? null : videoCorner })
-                            }
-                          >
-                            <SelectTrigger aria-label="Full view camera" className="bg-gray-800 border-gray-700 text-white">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent className="bg-gray-900 border-gray-700 text-white">
-                              {policyCameras.map((camera) => (
-                                <SelectItem key={camera} value={camera}>
-                                  {cameraLabel(camera)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label className="text-xs text-gray-400">In the corner</Label>
-                          <Select
-                            value={videoCorner ?? NO_CORNER}
-                            onValueChange={(corner) =>
-                              setVideoChoice({ main: videoMain ?? policyCameras[0], corner: corner === NO_CORNER ? null : corner })
-                            }
-                          >
-                            <SelectTrigger aria-label="Corner camera" className="bg-gray-800 border-gray-700 text-white">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent className="bg-gray-900 border-gray-700 text-white">
-                              <SelectItem value={NO_CORNER}>None</SelectItem>
-                              {policyCameras
-                                .filter((camera) => camera !== videoMain)
-                                .map((camera) => (
-                                  <SelectItem key={camera} value={camera}>
-                                    {cameraLabel(camera)}
-                                  </SelectItem>
-                                ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="remote-duration" className="text-sm text-gray-300">Max duration (seconds)</Label>
+                        <NumberInput
+                          id="remote-duration"
+                          min={1}
+                          value={settings.durationS}
+                          onChange={(v) => {
+                            if (v !== undefined) update({ durationS: v });
+                          }}
+                          className="bg-gray-800 border-gray-700 text-white"
+                        />
                       </div>
-                    ) : null}
-                  </div>
+                    </>
+                  )}
+                  <ChunkBlendingOption
+                    id="remote-chunk-blending"
+                    settings={settings}
+                    onChange={update}
+                    fps={fps}
+                    note={isInteractive ? "You can also switch it between commands on the session page." : null}
+                    warning={
+                      settings.prefetch === 0
+                        ? "Prefetch (under Advanced) is 0: the arm plays every chunk to its end before the next one comes, so there is nothing to blend."
+                        : settings.blendSteps > settings.prefetch
+                          ? `At most ${settings.prefetch} actions are left when a new chunk arrives (Prefetch, under Advanced), so at most that many get blended.`
+                          : null
+                    }
+                  />
+                  <RunVideoOptions id="remote-record-video" video={video} what={isInteractive ? "session" : "run"} />
                   <Collapsible className="group space-y-3">
                     <CollapsibleTrigger className="flex w-full items-center justify-between text-sm font-medium text-gray-300">
                       Advanced
@@ -479,8 +411,8 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
                         <NumberInput
                           id="remote-maxstep"
                           min={1}
-                          value={maxStep}
-                          onChange={setMaxStep}
+                          value={settings.maxStep}
+                          onChange={(v) => update({ maxStep: v ?? null })}
                           className="bg-gray-800 border-gray-700 text-white"
                         />
                       </div>
@@ -490,8 +422,8 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
                           id="remote-nsteps"
                           min={1}
                           max={hello.chunk_size}
-                          value={nActionSteps}
-                          onChange={setNActionSteps}
+                          value={settings.nActionSteps}
+                          onChange={(v) => update({ nActionSteps: v ?? null })}
                           placeholder={String(hello.n_action_steps)}
                           className="bg-gray-800 border-gray-700 text-white"
                         />
@@ -501,8 +433,8 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
                         <NumberInput
                           id="remote-prefetch"
                           min={0}
-                          value={prefetch}
-                          onChange={(v) => setPrefetch(v ?? 0)}
+                          value={settings.prefetch}
+                          onChange={(v) => update({ prefetch: v ?? 0 })}
                           className="bg-gray-800 border-gray-700 text-white"
                         />
                       </div>
@@ -523,7 +455,7 @@ const RemoteInferenceModal: React.FC<Props> = ({ open, onOpenChange, robot }) =>
                 className="w-full sm:w-auto bg-green-500 hover:bg-green-600 text-white px-10 py-6 text-lg disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Play className="w-5 h-5 mr-2" />
-                {submitting ? "Starting…" : "Start"}
+                {submitting ? "Starting…" : isInteractive ? "Start session" : "Start"}
               </Button>
               <Button
                 onClick={() => onOpenChange(false)}

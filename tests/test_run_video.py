@@ -140,3 +140,53 @@ def test_the_route_serves_a_saved_video(tmp_lerobot_home: Path) -> None:
     assert response.headers["content-disposition"].startswith("inline")
     assert client.get("/run-videos/nope.mp4").status_code == 404
     assert client.get("/run-videos/..%2Fremote_servers.mp4").status_code == 404
+
+
+# ------------------------------------------------------------------------------- interactive session captions
+CAPTIONS = (
+    ("completed", "pick up the red cube", "0:23"),
+    ("not_completed", "stack the blocks " * 30, "1:00 time limit"),  # far too long for one row
+    ("running", "café — 你好", "0:12 / 1:00"),
+)
+
+
+def test_the_caption_strip_keeps_one_size_whatever_it_shows() -> None:
+    from lelab.run_video import _caption_metrics, render_caption_strip
+
+    empty = render_caption_strip(640, (), 3)
+    full = render_caption_strip(640, CAPTIONS, 3)
+    assert empty.shape == full.shape == (_caption_metrics(640, 3)[2], 640, 3)
+    assert full.shape[0] % 2 == 0 and full.dtype == np.uint8
+    assert not np.array_equal(empty, full)
+
+
+def test_the_newest_command_is_on_the_bottom_row_and_older_ones_drop_off() -> None:
+    from lelab.run_video import CAPTION_STYLES, _caption_metrics, render_caption_strip
+
+    size, row, height = _caption_metrics(640, 3)
+    pad = max(4, size // 3)
+    strip = render_caption_strip(640, CAPTIONS, 3)
+    badge = strip[height - pad - row // 2, pad + 2]  # left end of the last row's badge
+    assert tuple(badge) == CAPTION_STYLES["running"][1]
+
+    fourth = (*CAPTIONS, ("stopped", "wave", "0:01"))
+    assert np.array_equal(render_caption_strip(640, fourth, 3), render_caption_strip(640, fourth[1:], 3))
+
+
+def test_an_interactive_video_has_the_captions_under_the_picture(tmp_path: Path) -> None:
+    import av
+
+    from lelab.run_video import RunVideo, _caption_metrics
+
+    fps = 20
+    video = RunVideo(tmp_path / "run.mp4", fps, "front", caption_lines=3)
+    for i in range(6):
+        video.add({"front": np.full((48, 64, 3), 120, np.uint8)}, (("running", "pick", f"0:0{i} / 1:00"),))
+        time.sleep(1 / fps)
+    info = video.close()
+    assert info["error"] is None and info["frames"] >= 4
+
+    with av.open(info["path"]) as container:
+        frame = next(container.decode(container.streams.video[0])).to_ndarray(format="rgb24")
+    assert frame.shape == (48 + _caption_metrics(64, 3)[2], 64, 3)
+    assert abs(int(frame[10, 10].mean()) - 120) < 12  # the picture on top, untouched
