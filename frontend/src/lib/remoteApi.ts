@@ -108,10 +108,15 @@ export interface TrainingKitCheck {
   path: string;
   /** added: was missing; updated: was different; up_to_date: already matched; kept: the user's .env. */
   status: "added" | "updated" | "up_to_date" | "kept";
+  /** The kit version LeLab sent (lelab-kit-version), and what the server's copy had before (null: none). */
+  version?: string | null;
+  previous_version?: string | null;
 }
 
 /** What checking the Slurm training kit (.env.example, slurm/*.sbatch, the policy server) did on the server. */
 export interface TrainingKitResult {
+  /** LELAB_KIT_VERSION of this LeLab: what the server's files are now. */
+  version?: string;
   remote_dir: string;
   dataset_dir: string;
   /** The files that were copied (missing or different). */

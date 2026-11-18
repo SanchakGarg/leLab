@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from lelab.policy_server import LELAB_KIT_VERSION
+
 HOME = "/raid/home/student"
 
 
@@ -383,6 +385,11 @@ def test_training_kit_copies_only_missing_or_changed_files(sftp: FakeSftp) -> No
 
     statuses = {c["name"]: c["status"] for c in again["checks"]}
     assert statuses["slurm/train_act.sbatch"] == "updated"
+    by_name = {c["name"]: c for c in again["checks"]}
+    assert again["version"] == LELAB_KIT_VERSION
+    assert by_name["slurm/train_act.sbatch"]["previous_version"] is None  # "an old version" had none
+    assert by_name["slurm/lelab_train.sh"]["previous_version"] == LELAB_KIT_VERSION
+    assert by_name["lelab_policy_server.py"]["version"] == LELAB_KIT_VERSION
     assert statuses["slurm/train_pi05_lora.sbatch"] == "added"
     assert statuses["slurm/lelab_train.sh"] == "up_to_date"
     assert os.access(slurm / "lelab_train.sh", os.X_OK)  # its mode was fixed in place
@@ -440,3 +447,11 @@ def test_install_training_kit_route(connected: SimpleNamespace, client: TestClie
     assert response.status_code == 200, response.text
     assert response.json()["remote_dir"] == f"{HOME}/work"
     assert client.post("/remote-servers/nope/install-training-kit", json={}).status_code == 404
+
+
+def test_kit_version_is_read_from_scripts_and_the_policy_server() -> None:
+    from lelab.remote_upload import kit_version_of
+
+    assert kit_version_of(b"#!/bin/bash\n# lelab-kit-version: 2026.11.18-1\n") == "2026.11.18-1"
+    assert kit_version_of(b'PROTOCOL = 1\nLELAB_KIT_VERSION = "2026.11.18-2"\n') == "2026.11.18-2"
+    assert kit_version_of(b"#!/bin/bash\necho hi\n") is None

@@ -341,7 +341,7 @@ const RemoteServerDialog: React.FC<Props> = ({ open, onOpenChange }) => {
 
 const STATUS_TEXT: Record<TrainingKitCheck["status"], { label: string; className: string }> = {
   added: { label: "copied (was missing)", className: "text-emerald-300" },
-  updated: { label: "updated (was different)", className: "text-sky-300" },
+  updated: { label: "updated", className: "text-sky-300" },
   up_to_date: { label: "up to date", className: "text-gray-500" },
   kept: { label: "kept (yours)", className: "text-gray-500" },
 };
@@ -359,13 +359,25 @@ const TrainingKitSummary: React.FC<{ result: TrainingKitResult }> = ({ result })
           : `Copied ${copied} of ${checks.length} files to `}
         <code className="break-all text-gray-200">{result.remote_dir}</code>
         {copied === 0 ? " (.env.example rewritten)." : "."}
+        {result.version ? (
+          <>
+            {" "}Version on the server: <code className="text-gray-200">{result.version}</code>.
+          </>
+        ) : null}
       </p>
       {checks.length ? (
         <ul className="space-y-0.5 rounded bg-black/40 px-2 py-1.5" aria-label="Slurm training files">
           {checks.map((c) => (
             <li key={c.path} className="flex justify-between gap-3">
               <code className="break-all text-gray-300">{c.name}</code>
-              <span className={`shrink-0 ${STATUS_TEXT[c.status].className}`}>{STATUS_TEXT[c.status].label}</span>
+              <span className={`shrink-0 ${STATUS_TEXT[c.status].className}`}>
+                {STATUS_TEXT[c.status].label}
+                {c.status === "updated" && c.version
+                  ? ` ${c.previous_version ?? "no version"} → ${c.version}`
+                  : c.status === "up_to_date" && c.version
+                    ? ` (${c.version})`
+                    : ""}
+              </span>
             </li>
           ))}
         </ul>

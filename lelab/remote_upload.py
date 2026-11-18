@@ -260,10 +260,20 @@ def _read_remote(sftp: paramiko.SFTPClient, path: str, size: int) -> bytes:
         return f.read(size + 1)
 
 
+_KIT_VERSION_RE = re.compile(rb'(?:lelab-kit-version: |LELAB_KIT_VERSION = ")([^\s"]+)')
+
+
+def kit_version_of(data: bytes) -> str | None:
+    """The LELAB_KIT_VERSION a server-side file was sent with (None: from before versions, or not LeLab's)."""
+    match = _KIT_VERSION_RE.search(data)
+    return match.group(1).decode(errors="replace") if match else None
+
+
 def _sync_file(
     sftp: paramiko.SFTPClient, data: bytes, remote: str, mode: int | None, always: bool = False
-) -> str:
-    """Make `remote` hold `data`: "added" (was missing), "updated" (was different) or "up_to_date".
+) -> tuple[str, str | None]:
+    """Make `remote` hold `data`. Returns its status, "added" (was missing), "updated" (was different) or
+    "up_to_date", and the kit version the server's file had before (None when missing or unversioned).
 
     A file that already matches is left alone (a wrong mode is fixed), unless `always`.
     """
@@ -271,14 +281,15 @@ def _sync_file(
         st = sftp.stat(remote)
     except FileNotFoundError:
         _put_bytes(sftp, data, remote, mode)
-        return "added"
-    same = st.st_size == len(data) and _read_remote(sftp, remote, len(data)) == data
+        return "added", None
+    old = _read_remote(sftp, remote, max(len(data), min(st.st_size or 0, 1 << 20)))
+    same = old == data
     if same and not always:
         if mode is not None and st.st_mode is not None and st.st_mode & 0o777 != mode:
             sftp.chmod(remote, mode)
-        return "up_to_date"
+        return "up_to_date", kit_version_of(old)
     _put_bytes(sftp, data, remote, mode)
-    return "up_to_date" if same else "updated"
+    return ("up_to_date" if same else "updated"), kit_version_of(old)
 
 
 _ENV_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=", re.MULTILINE)
@@ -302,7 +313,16 @@ def install_training_kit(
     checks: list[dict[str, str]] = []
 
     def sync(name: str, data: bytes, remote: str, mode: int | None, always: bool = False) -> None:
-        checks.append({"name": name, "path": remote, "status": _sync_file(sftp, data, remote, mode, always)})
+        status, previous = _sync_file(sftp, data, remote, mode, always)
+        checks.append(
+            {
+                "name": name,
+                "path": remote,
+                "status": status,
+                "version": kit_version_of(data),
+                "previous_version": previous,
+            }
+        )
 
     for name in TRAINING_KIT_SCRIPTS:
         data = render_training_kit_file(name, project, datasets).encode()
@@ -325,6 +345,7 @@ def install_training_kit(
         checks.append({"name": ".env", "path": env_path, "status": "kept"})
 
     return {
+        "version": LELAB_KIT_VERSION,
         "remote_dir": project,
         "dataset_dir": datasets,
         "files": [c["path"] for c in checks if c["status"] in ("added", "updated")],

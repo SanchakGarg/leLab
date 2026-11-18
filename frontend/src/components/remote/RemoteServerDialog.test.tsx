@@ -107,13 +107,26 @@ test("checking the Slurm files lists what was copied and the settings the user's
       calls.push({ method: "POST", path: url.replace("http://test", ""), body: JSON.parse(String(init.body)) });
       const dir = "/home/student/projects/lelab";
       return json({
+        version: "2026.11.18-2",
         remote_dir: dir,
         dataset_dir: "/home/student/data",
         files: [`${dir}/slurm/train_pi05_lora.sbatch`],
         checks: [
-          { name: "slurm/train_act.sbatch", path: `${dir}/slurm/train_act.sbatch`, status: "up_to_date" },
+          {
+            name: "slurm/train_act.sbatch",
+            path: `${dir}/slurm/train_act.sbatch`,
+            status: "up_to_date",
+            version: "2026.11.18-2",
+            previous_version: "2026.11.18-2",
+          },
           { name: "slurm/train_pi05_lora.sbatch", path: `${dir}/slurm/train_pi05_lora.sbatch`, status: "added" },
-          { name: ".env.example", path: `${dir}/.env.example`, status: "updated" },
+          {
+            name: ".env.example",
+            path: `${dir}/.env.example`,
+            status: "updated",
+            version: "2026.11.18-2",
+            previous_version: "2026.11.18-1",
+          },
           { name: ".env", path: `${dir}/.env`, status: "kept" },
         ],
         created_env: false,
@@ -137,8 +150,9 @@ test("checking the Slurm files lists what was copied and the settings the user's
   expect(post.body).toEqual({ remote_dir: "projects/lelab", dataset_dir: "data" });
   const list = container.querySelector('[aria-label="Slurm training files"]')!;
   expect(list.textContent).toContain("slurm/train_pi05_lora.sbatchcopied (was missing)");
-  expect(list.textContent).toContain("slurm/train_act.sbatchup to date");
-  expect(list.textContent).toContain(".env.exampleupdated (was different)");
+  expect(list.textContent).toContain("slurm/train_act.sbatchup to date (2026.11.18-2)");
+  expect(list.textContent).toContain(".env.exampleupdated 2026.11.18-1 → 2026.11.18-2");
+  expect(container.textContent).toContain("Version on the server: 2026.11.18-2");
   expect(container.textContent).toContain("Copied 2 of 4 files");
   expect(container.textContent).toContain("PI05_BASE, PI05_BATCH");
 });
