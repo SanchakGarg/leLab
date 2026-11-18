@@ -92,6 +92,7 @@ def test_camera_names_undo_the_training_rename() -> None:
         "observation.state": SimpleNamespace(shape=(6,)),
         "observation.images.camera1": SimpleNamespace(shape=(3, 480, 640)),
         "observation.images.camera2": SimpleNamespace(shape=(3, 240, 320)),
+        "observation.images.camera3": SimpleNamespace(shape=(3, 480, 640)),
         "observation.images.side": SimpleNamespace(shape=(3, 360, 480)),
     }
     renames = [
@@ -113,6 +114,15 @@ def test_camera_names_undo_the_training_rename() -> None:
         "wrist": [240, 320, 3],
         "side": [360, 480, 3],
     }
+
+
+def test_an_unfilled_base_camera_slot_is_not_asked_for() -> None:
+    from lelab.policy_server import camera_features
+
+    features = {f"observation.images.camera{i}": SimpleNamespace(shape=(3, 256, 256)) for i in (1, 2, 3)}
+
+    # No renames: the names are the dataset's own, so every camera is needed.
+    assert set(camera_features(features)) == {"camera1", "camera2", "camera3"}
 
 
 def test_bind_first_free_skips_a_taken_port() -> None:

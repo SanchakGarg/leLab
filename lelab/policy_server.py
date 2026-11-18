@@ -71,6 +71,11 @@ PROTOCOL = 1
 DEFAULT_PORT = 5555
 FPS = 30
 IMAGE_PREFIX = "observation.images."
+# Camera slots of the pretrained bases the Slurm kit fine-tunes (smolvla_base, pi05_base). Training maps the
+# dataset's cameras onto them; one left unmapped was never filled, and these policies run with it missing.
+BASE_CAMERA_SLOTS = frozenset(
+    {"camera1", "camera2", "camera3", "base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"}
+)
 # A client that sends nothing for this long is dropped, so a crashed one can't hold the server.
 IDLE_TIMEOUT_S = 120.0
 _HEAD = struct.Struct(">II")
@@ -149,6 +154,10 @@ def camera_features(
     cameras: dict[str, str] = {}
     for key in input_features:
         if not key.startswith(IMAGE_PREFIX):
+            continue
+        if inverse and key not in inverse and key.removeprefix(IMAGE_PREFIX) in BASE_CAMERA_SLOTS:
+            # A slot of the base model (e.g. smolvla_base's camera3) that no dataset camera was mapped onto:
+            # training never filled it and the policy runs without it, so clients aren't asked for it.
             continue
         original = inverse.get(key, key)
         name = original.removeprefix(IMAGE_PREFIX) if original.startswith(IMAGE_PREFIX) else original
