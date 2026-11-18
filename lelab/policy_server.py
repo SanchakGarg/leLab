@@ -69,7 +69,7 @@ import numpy as np
 
 # The version of LeLab's server-side files (this script and the Slurm kit). Bump it whenever any of them changes:
 # `python lelab_policy_server.py --version` and the `# lelab-kit-version:` line in slurm/* show what a server has.
-LELAB_KIT_VERSION = "2026.11.18-1"
+LELAB_KIT_VERSION = "2026.11.18-2"
 PROTOCOL = 1
 DEFAULT_PORT = 5555
 FPS = 30
@@ -169,9 +169,17 @@ def camera_features(
 
 
 def image_shapes(input_features: Mapping[str, Any], cameras: Mapping[str, str]) -> dict[str, list[int]]:
-    """{camera: [height, width, 3]} the checkpoint was trained at (its features are channels-first)."""
+    """{camera: [height, width, 3]} the checkpoint was trained at (its features are channels-first).
+
+    A camera mapped onto a base model's slot (smolvla_base's camera1, ...) is left out: that slot's shape is the
+    base model's input size (256x256), not the camera's, and the policy resizes those images itself. Clients then
+    capture at the camera's own resolution instead of asking a webcam for 256x256.
+    """
     shapes = {}
     for name, key in cameras.items():
+        slot = key.removeprefix(IMAGE_PREFIX)
+        if slot in BASE_CAMERA_SLOTS and slot != name:
+            continue
         shape = tuple(getattr(input_features[key], "shape", ()) or ())
         if len(shape) == 3:
             channels, height, width = shape

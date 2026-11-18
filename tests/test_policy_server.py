@@ -109,11 +109,8 @@ def test_camera_names_undo_the_training_rename() -> None:
         "wrist": "observation.images.camera2",
         "side": "observation.images.side",
     }
-    assert image_shapes(features, cameras) == {
-        "front": [480, 640, 3],
-        "wrist": [240, 320, 3],
-        "side": [360, 480, 3],
-    }
+    # front and wrist went into smolvla_base's slots, whose shape is the base's input size, not theirs.
+    assert image_shapes(features, cameras) == {"side": [360, 480, 3]}
 
 
 def test_an_unfilled_base_camera_slot_is_not_asked_for() -> None:

@@ -275,20 +275,25 @@ export async function startRemoteInference(
   });
 }
 
-/** The resolution each camera must have: from the server, else a same-named robot camera, else 640×480. */
+/**
+ * The resolution to capture each camera at: a same-named robot camera's own (it recorded the dataset, so the
+ * webcam can do it), else the server's image shape, else 640×480. The server resizes to what the policy takes,
+ * so capturing at the model's input size (smolvla's 256×256, which a webcam usually refuses) isn't needed.
+ */
 export function imageFeaturesFromHello(
   hello: PolicyHello,
   robotCameras: { name: string; width?: number | null; height?: number | null }[] = [],
 ): ImageFeatures {
   const features: ImageFeatures = {};
   for (const name of hello.cameras) {
-    const shape = hello.image_shapes?.[name];
-    if (shape && shape.length >= 2) {
-      features[name] = { height: shape[0], width: shape[1] };
+    const cam = robotCameras.find((c) => c.name.toLowerCase() === name.toLowerCase());
+    if (cam?.width && cam?.height) {
+      features[name] = { height: cam.height, width: cam.width };
       continue;
     }
-    const cam = robotCameras.find((c) => c.name.toLowerCase() === name.toLowerCase());
-    features[name] = { height: cam?.height || 480, width: cam?.width || 640 };
+    const shape = hello.image_shapes?.[name];
+    features[name] =
+      shape && shape.length >= 2 ? { height: shape[0], width: shape[1] } : { height: 480, width: 640 };
   }
   return features;
 }
