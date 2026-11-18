@@ -1,4 +1,5 @@
 #!/bin/bash
+# lelab-kit-version: __LELAB_KIT_VERSION__
 # Train ACT, all weights: from scratch, or from ACT_INIT to keep training an ACT you have.
 # Runs on a dataset LeLab sent to this server. Settings come from .env in the project folder (ACT_* and the shared
 # ones; see .env.example). Submit from anywhere:

@@ -1,4 +1,5 @@
 #!/bin/bash
+# lelab-kit-version: __LELAB_KIT_VERSION__
 # Fine-tune of pi0.5 (lerobot/pi05_base, Physical Intelligence's 3B vision-language-action model).
 # By default only the action expert trains (PI05_EXPERT_ONLY=true, PI05_FREEZE_VISION=true), in bfloat16 with
 # gradient checkpointing, so it fits a ~23 GB GPU slice; set both to false on a bigger GPU (40 GB+) for a full fine-tune.

@@ -1,4 +1,5 @@
 #!/bin/bash
+# lelab-kit-version: __LELAB_KIT_VERSION__
 # LoRA (PEFT) fine-tune of SmolVLA (lerobot/smolvla_base): low-rank adapters, so less GPU memory and small checkpoints.
 # Runs on a dataset LeLab sent to this server. Settings come from .env in the project folder (SMOLVLA_*, SMOLVLA_LORA_* and the shared
 # ones; see .env.example). Submit from anywhere:

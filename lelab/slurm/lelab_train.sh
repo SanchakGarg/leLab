@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# lelab-kit-version: __LELAB_KIT_VERSION__
 # Trains one LeRobot policy on a dataset LeLab sent to this server. Sourced by slurm/train_*.sbatch, which set
 #   POLICY_KIND = act | smolvla | pi05
 #   FINETUNE    = full | lora
@@ -7,6 +8,8 @@
 # Each run trains in $OUTPUT_DIR/<kind>_<finetune>_<dataset>[_<RUN_TAG>]. Submitting the same job again resumes it
 # from its last checkpoint (after a time limit or scancel). When it finishes, the trained policy is copied to
 # $POLICY_DIR/<run> (a link to its last checkpoint; POLICY_COPY=1 copies it), which slurm/serve_policy.sbatch serves.
+# POLICY_DIR must be outside OUTPUT_DIR (checked before training), and publishing only ever replaces a link or a
+# policy an earlier run published there, never a training run.
 
 # shellcheck source=lelab_common.sh
 source "$PROJECT_DIR/slurm/lelab_common.sh"
@@ -33,6 +36,21 @@ AUGMENT=${AUGMENT:-0}
 RUN=${POLICY_KIND}_${FINETUNE}_${DATA_NAME}${RUN_TAG:+_$RUN_TAG}
 OUT=$OUTPUT_DIR/$RUN
 LAST=$OUT/checkpoints/last/pretrained_model/train_config.json
+# POLICY_DIR/<run> is replaced when a run finishes. If POLICY_DIR were OUTPUT_DIR (or one inside the other), that
+# would be the run folder itself, checkpoints and all: refuse before training rather than lose them afterwards.
+mkdir -p "$OUTPUT_DIR" "$POLICY_DIR"
+_out_real=$(cd "$OUTPUT_DIR" && pwd -P)
+_pol_real=$(cd "$POLICY_DIR" && pwd -P)
+case "$_pol_real/" in
+    "$_out_real/"*) die "POLICY_DIR ($POLICY_DIR) is OUTPUT_DIR or inside it. Publishing the finished policy" \
+        "there would replace training runs and their checkpoints. Set POLICY_DIR=policies (or any other folder" \
+        "outside OUTPUT_DIR) in $ENV_FILE." ;;
+esac
+case "$_out_real/" in
+    "$_pol_real/"*) die "OUTPUT_DIR ($OUTPUT_DIR) is inside POLICY_DIR ($POLICY_DIR). Keep them separate folders" \
+        "in $ENV_FILE, e.g. OUTPUT_DIR=outputs and POLICY_DIR=policies." ;;
+esac
+unset _out_real _pol_real
 TRAIN=${LEROBOT_TRAIN:-$LELAB_ENV_DIR/bin/lerobot-train}
 [ -x "$TRAIN" ] || die "no lerobot-train in $LELAB_ENV_DIR/bin. Install LeRobot there (see .env.example)."
 
@@ -228,7 +246,6 @@ else
     TRACK_ARGS=(--trackio.enable=false)
 fi
 
-mkdir -p "$OUTPUT_DIR" "$POLICY_DIR"
 if [ -f "$LAST" ]; then
     echo "=== resuming $OUT from $(readlink "$OUT/checkpoints/last" || echo last), to step $STEPS ==="
     CMD=("$TRAIN" --config_path="$LAST" --resume=true --steps="$STEPS" --save_freq="$SAVE_FREQ")
@@ -256,7 +273,21 @@ fi
 SRC=$OUT/checkpoints/last/pretrained_model
 [ -d "$SRC" ] || die "training ended without $SRC"
 DEST=$POLICY_DIR/$RUN
-rm -rf "$DEST.tmp" "$DEST"                   # a link from an earlier run is removed, not followed
+# Only ever replace what an earlier publish left there: a link, or a copied pretrained_model folder. Anything else
+# (a training run, a folder with checkpoints) is left alone and the job stops, so nothing trained is deleted.
+if [ -L "$DEST" ]; then
+    rm -f "$DEST"                            # a link from an earlier run is removed, not followed
+elif [ -e "$DEST" ]; then
+    if [ -d "$DEST" ] && [ ! -e "$DEST/checkpoints" ] \
+        && { [ -f "$DEST/config.json" ] || [ -f "$DEST/adapter_config.json" ]; } \
+        && [ "$(cd "$DEST" && pwd -P)" != "$(cd "$OUT" && pwd -P)" ]; then
+        rm -rf "$DEST"                       # a policy copied by an earlier POLICY_COPY=1 run
+    else
+        die "$DEST exists and isn't a policy an earlier run published, so it was left as it is. The trained" \
+            "policy is in $SRC; move $DEST away and resubmit to publish it."
+    fi
+fi
+rm -rf "$DEST.tmp"
 if [ "${POLICY_COPY:-0}" = 1 ]; then          # a copy outlives outputs/, at the cost of the model's size again
     cp -RL "$SRC" "$DEST.tmp"
     mv "$DEST.tmp" "$DEST"

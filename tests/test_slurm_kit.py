@@ -316,3 +316,33 @@ def test_policy_copy_keeps_the_model_after_its_run_is_deleted(project: Path) -> 
     shutil.rmtree(project / "outputs")
     assert (published / "config.json").is_file()
     assert _run(project, "serve_policy.sbatch", POLICY="policies/act_full_pick_cube").returncode == 0
+
+
+def test_policy_dir_inside_output_dir_is_refused_before_training(project: Path) -> None:
+    for policy_dir in ("outputs", "outputs/policies"):
+        result = _run(
+            project, "train_act.sbatch", DATASET="pick_cube", OUTPUT_DIR="outputs", POLICY_DIR=policy_dir
+        )
+        assert result.returncode == 1 and "POLICY_DIR" in result.stderr
+        assert not (project / "argv.json").exists()  # lerobot-train never ran
+
+
+def test_publishing_never_deletes_a_folder_it_did_not_make(project: Path) -> None:
+    run = project / "outputs" / "act_full_pick_cube"
+    stranger = project / "policies" / "act_full_pick_cube"
+    (stranger / "checkpoints" / "000005").mkdir(parents=True)
+
+    result = _run(project, "train_act.sbatch", DATASET="pick_cube")
+
+    assert result.returncode == 1 and "left as it is" in result.stderr
+    assert (stranger / "checkpoints" / "000005").is_dir()
+    assert (run / "checkpoints" / "000010" / "pretrained_model" / "config.json").is_file()
+
+
+def test_every_kit_file_carries_the_kit_version(project: Path) -> None:
+    from lelab.policy_server import LELAB_KIT_VERSION
+
+    for f in [*(project / "slurm").iterdir(), project / ".env"]:
+        text = f.read_text()
+        assert f"lelab-kit-version: {LELAB_KIT_VERSION}" in text, f.name
+        assert "__LELAB_KIT_VERSION__" not in text, f.name

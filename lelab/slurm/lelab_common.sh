@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# lelab-kit-version: __LELAB_KIT_VERSION__
 # Shared by LeLab's Slurm scripts (slurm/*.sbatch): reads the project's .env, resolves the folders it names and
 # finds the Python environment. Sourced at the top level, after the script has set PROJECT_DIR.
 #
@@ -13,6 +14,7 @@ die() {
     exit 1
 }
 
+echo "=== LeLab Slurm kit __LELAB_KIT_VERSION__ ==="
 ENV_FILE=${LELAB_ENV_FILE:-$PROJECT_DIR/.env}
 if [ -f "$ENV_FILE" ]; then
     _lelab_preset=$(export -p)               # what the job was submitted with...

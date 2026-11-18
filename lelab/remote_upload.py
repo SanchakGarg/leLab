@@ -51,6 +51,7 @@ import paramiko
 from pydantic import BaseModel
 
 from . import episode_media, remote_ssh
+from .policy_server import LELAB_KIT_VERSION
 from .utils import config
 
 logger = logging.getLogger(__name__)
@@ -240,6 +241,7 @@ def _sh_single_quoted(value: str) -> str:
 def render_training_kit_file(name: str, project_dir: str, dataset_dir: str) -> str:
     """A kit file with this server's folders written in."""
     text = (TRAINING_KIT_DIR / name).read_text()
+    text = text.replace("__LELAB_KIT_VERSION__", LELAB_KIT_VERSION)
     text = text.replace("__LELAB_PROJECT_DIR__", _sh_single_quoted(project_dir))
     text = text.replace("{project}", project_dir)
     return text.replace("__LELAB_DATASET_DIR__", shlex.quote(dataset_dir))

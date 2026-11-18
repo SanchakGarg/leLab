@@ -1,4 +1,5 @@
 #!/bin/bash
+# lelab-kit-version: __LELAB_KIT_VERSION__
 # LoRA fine-tune of a trained ACT (ACT_INIT): small adapters on its transformer, the action head trained fully.
 # Runs on a dataset LeLab sent to this server. Settings come from .env in the project folder (ACT_INIT, ACT_LORA_* and the shared
 # ones; see .env.example). Submit from anywhere:

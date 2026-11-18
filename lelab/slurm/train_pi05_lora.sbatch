@@ -1,4 +1,5 @@
 #!/bin/bash
+# lelab-kit-version: __LELAB_KIT_VERSION__
 # LoRA (PEFT) fine-tune of pi0.5 (lerobot/pi05_base, Physical Intelligence's 3B vision-language-action model): low-rank
 # adapters on the action expert, in bfloat16 with gradient checkpointing, so less GPU memory and small checkpoints.
 # Runs on a dataset LeLab sent to this server. Settings come from .env in the project folder (PI05_*, PI05_LORA_* and

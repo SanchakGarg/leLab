@@ -1,4 +1,5 @@
 #!/bin/bash
+# lelab-kit-version: __LELAB_KIT_VERSION__
 # Full fine-tune of SmolVLA (lerobot/smolvla_base): every weight trains, vision encoder included, unless .env freezes it.
 # Runs on a dataset LeLab sent to this server. Settings come from .env in the project folder (SMOLVLA_* and the shared
 # ones; see .env.example). Submit from anywhere:

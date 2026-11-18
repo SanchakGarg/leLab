@@ -67,6 +67,9 @@ from typing import Any
 
 import numpy as np
 
+# The version of LeLab's server-side files (this script and the Slurm kit). Bump it whenever any of them changes:
+# `python lelab_policy_server.py --version` and the `# lelab-kit-version:` line in slurm/* show what a server has.
+LELAB_KIT_VERSION = "2026.11.18-1"
 PROTOCOL = 1
 DEFAULT_PORT = 5555
 FPS = 30
@@ -400,6 +403,7 @@ def serve(agent: Any, srv: socket.socket, hello: dict[str, Any], stop: threading
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action="version", version=f"lelab_policy_server {LELAB_KIT_VERSION}")
     ap.add_argument(
         "--policy", required=True, help="pretrained_model folder from lerobot-train, or a Hub repo id"
     )
@@ -449,7 +453,7 @@ def main(argv: list[str] | None = None) -> None:
     if port != a.port:
         print(f"port {a.port} is in use on this node; serving on {port} instead", flush=True)
     ip = node_ip()
-    print(f"=== serving on {ip}:{port} ===", flush=True)
+    print(f"=== lelab_policy_server {LELAB_KIT_VERSION}: serving on {ip}:{port} ===", flush=True)
     print(f"In LeLab: Run model on server -> policy host {ip}, port {port}", flush=True)
     try:
         serve(agent, srv, make_hello(agent, a.fps, a.n_action_steps))

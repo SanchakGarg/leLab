@@ -1,4 +1,5 @@
 #!/bin/bash
+# lelab-kit-version: __LELAB_KIT_VERSION__
 # Serve a trained policy on a GPU node, so LeLab on your computer can run it on the arm (Run model on server).
 # Runs lelab_policy_server.py (LeLab sends it next to these scripts) with the policy named by POLICY in .env:
 #
