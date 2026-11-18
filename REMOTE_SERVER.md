@@ -41,7 +41,7 @@ It goes over SFTP, not scp, because some cluster shells refuse scp. You can canc
 
 The dialog shows the server's real connection state: it checks again when it opens and every few seconds while it is open. If the session is gone (LeLab restarted, or the connection dropped), it shows the password field again instead of **Connected**.
 
-**Also send the Slurm training files** (ticked by default, remembered) copies the training kit to the work folder in the same go (see step 3). You can also send it alone with **Send Slurm training files to the work folder** in the server dialog.
+**Also send the Slurm training files** (ticked by default, remembered) checks the training kit in the work folder in the same go (see step 3). You can also check it alone with **Check Slurm training files on the server** in the server dialog: it compares each file on the server with this LeLab's, copies the ones that are missing or different, always rewrites `.env.example`, and lists what it did per file. It also lists the settings in `.env.example` that your `.env` doesn't set yet (they use their defaults until you copy them over).
 
 When it's done, LeLab shows the `sbatch` commands that train on the dataset (or a `lerobot-train` command when the Slurm files aren't on the server).
 
@@ -53,13 +53,15 @@ LeLab puts this in the work folder (the scripts live in [lelab/slurm/](lelab/slu
 
 ```
 <work folder>/
-  .env.example               every setting, with comments; replaced on each send
+  .env.example               every setting, with comments; rewritten on every check
   .env                       your settings: created from .env.example only if missing, never overwritten
   lelab_policy_server.py
   slurm/train_act.sbatch           ACT, all weights: from scratch, or from ACT_INIT to keep training one
   slurm/train_act_lora.sbatch      LoRA on a trained ACT (ACT_INIT)
   slurm/train_smolvla_full.sbatch  SmolVLA full fine-tune from lerobot/smolvla_base
   slurm/train_smolvla_lora.sbatch  SmolVLA LoRA (PEFT) fine-tune
+  slurm/train_pi05_full.sbatch     pi0.5 fine-tune from lerobot/pi05_base (action expert only by default, fits ~23 GB)
+  slurm/train_pi05_lora.sbatch     pi0.5 LoRA (PEFT) fine-tune
   slurm/serve_policy.sbatch        serves POLICY with lelab_policy_server.py
   slurm/lelab_common.sh, lelab_train.sh   shared by the jobs
 ```
@@ -68,7 +70,7 @@ Set these in `.env` once:
 
 | setting | default | meaning |
 |---|---|---|
-| `LELAB_ENV_DIR` | `venv` | venv or conda env with LeRobot (the folder holding `bin/python`). For LoRA it needs `lerobot[peft]`. |
+| `LELAB_ENV_DIR` | `venv` | venv or conda env with LeRobot (the folder holding `bin/python`). For LoRA it needs `lerobot[peft]`, for pi0.5 `lerobot[pi]`. |
 | `DATASET_DIR` | the dataset folder you sent to | where the datasets are |
 | `DATASET` | | the dataset to train on: a folder in `DATASET_DIR`, or an absolute path |
 | `OUTPUT_DIR` | `outputs` | training runs, one folder per run: `<policy>_<full\|lora>_<dataset>[_<RUN_TAG>]` |
@@ -76,7 +78,9 @@ Set these in `.env` once:
 | `POLICY` | newest in `POLICY_DIR` | what `serve_policy.sbatch` serves |
 | `TRACKIO` | `1` | track every run with Trackio (loss, learning rate, speed), project `TRACKIO_PROJECT` (`lelab`), stored in `TRACKIO_DIR` (`trackio`). Set `TRACKIO_SPACE_ID` (and `HF_TOKEN`) to sync live to a private Space instead. `0` turns it off. |
 
-Relative folders are inside the work folder. The training settings (steps, batch size, learning rates, LoRA rank and targets, which camera is SmolVLA's `camera1`, ...) are in `.env.example`, grouped per job. Then, from a login shell:
+Relative folders are inside the work folder. The training settings (steps, batch size, learning rates, LoRA rank and targets, which camera is SmolVLA's `camera1` or pi0.5's `base_0_rgb`, ...) are in `.env.example`, grouped per job.
+
+pi0.5 needs two extra things. Its tokenizer (`google/paligemma-3b-pt-224`) is gated: accept the license on its Hugging Face page and put `HF_TOKEN` in `.env`. And it normalizes state and actions by their 1st/99th percentiles: a dataset recorded before LeRobot 0.7 doesn't have them, so the first pi0.5 run adds them to the server copy's `meta/stats.json` (keeping the old file as `stats.json.orig`). Then, from a login shell:
 
 ```bash
 sbatch ~/projects/lelab/slurm/train_smolvla_lora.sbatch

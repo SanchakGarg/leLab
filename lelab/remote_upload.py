@@ -28,8 +28,10 @@ status.
 
 The same SFTP session also installs the Slurm training kit (lelab/slurm/) in the
 server's work folder: `.env.example` (folders and training settings), the
-`slurm/*.sbatch` jobs that train ACT and SmolVLA (full and LoRA) and serve a
-trained policy, and the policy server script they run.
+`slurm/*.sbatch` jobs that train ACT, SmolVLA and pi0.5 (full and LoRA) and serve
+a trained policy, and the policy server script they run. Installing compares each
+file with what LeLab would send and copies only the missing or different ones;
+`.env.example` is rewritten every time.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from __future__ import annotations
 import io
 import logging
 import posixpath
+import re
 import shlex
 import threading
 import time
@@ -91,6 +94,8 @@ TRAINING_KIT_SCRIPTS = (
     "train_act_lora.sbatch",
     "train_smolvla_full.sbatch",
     "train_smolvla_lora.sbatch",
+    "train_pi05_full.sbatch",
+    "train_pi05_lora.sbatch",
     "serve_policy.sbatch",
 )
 TRAINING_JOBS = tuple(f for f in TRAINING_KIT_SCRIPTS if f.startswith("train_"))
@@ -248,40 +253,84 @@ def slurm_train_commands(project_dir: str, dataset_path: str) -> list[str]:
     ]
 
 
+def _read_remote(sftp: paramiko.SFTPClient, path: str, size: int) -> bytes:
+    with sftp.open(path, "rb") as f:
+        return f.read(size + 1)
+
+
+def _sync_file(
+    sftp: paramiko.SFTPClient, data: bytes, remote: str, mode: int | None, always: bool = False
+) -> str:
+    """Make `remote` hold `data`: "added" (was missing), "updated" (was different) or "up_to_date".
+
+    A file that already matches is left alone (a wrong mode is fixed), unless `always`.
+    """
+    try:
+        st = sftp.stat(remote)
+    except FileNotFoundError:
+        _put_bytes(sftp, data, remote, mode)
+        return "added"
+    same = st.st_size == len(data) and _read_remote(sftp, remote, len(data)) == data
+    if same and not always:
+        if mode is not None and st.st_mode is not None and st.st_mode & 0o777 != mode:
+            sftp.chmod(remote, mode)
+        return "up_to_date"
+    _put_bytes(sftp, data, remote, mode)
+    return "up_to_date" if same else "updated"
+
+
+_ENV_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=", re.MULTILINE)
+
+
 def install_training_kit(
     sftp: paramiko.SFTPClient, profile: dict[str, Any], remote_dir: str = "", dataset_dir: str = ""
 ) -> dict[str, Any]:
-    """Copy .env.example, slurm/ and the policy server to the project folder.
+    """Check the kit in the project folder and copy what is missing or out of date.
 
-    Scripts and .env.example are replaced every time, so a newer LeLab updates
-    them; .env holds the user's own settings and is only written when missing.
+    Each script and the policy server is compared with what this LeLab would send and
+    only copied when missing or different. .env.example is rewritten every time. .env
+    holds the user's own settings and is only written when missing; the settings it
+    lacks compared with .env.example are listed in `env_missing_keys`.
     """
     project = resolve_remote_dir(sftp, remote_dir or profile.get("remote_work_dir", ""))
     datasets = resolve_remote_dir(sftp, dataset_dir or profile.get("remote_dataset_dir", ""))
     slurm_dir = posixpath.join(project, "slurm")
     _mkdirs(sftp, slurm_dir, set())
-    files = []
+
+    checks: list[dict[str, str]] = []
+
+    def sync(name: str, data: bytes, remote: str, mode: int | None, always: bool = False) -> None:
+        checks.append({"name": name, "path": remote, "status": _sync_file(sftp, data, remote, mode, always)})
+
     for name in TRAINING_KIT_SCRIPTS:
-        remote = posixpath.join(slurm_dir, name)
-        _put_bytes(sftp, render_training_kit_file(name, project, datasets).encode(), remote, 0o755)
-        files.append(remote)
-    server = posixpath.join(project, POLICY_SERVER_FILE)
-    _put_file(sftp, Path(__file__).with_name("policy_server.py"), server)
-    files.append(server)
+        data = render_training_kit_file(name, project, datasets).encode()
+        sync(f"slurm/{name}", data, posixpath.join(slurm_dir, name), 0o755)
+    server_data = Path(__file__).with_name("policy_server.py").read_bytes()
+    sync(POLICY_SERVER_FILE, server_data, posixpath.join(project, POLICY_SERVER_FILE), None)
     env_text = render_training_kit_file("env.example", project, datasets).encode()
-    _put_bytes(sftp, env_text, posixpath.join(project, ".env.example"))
-    files.append(posixpath.join(project, ".env.example"))
+    sync(".env.example", env_text, posixpath.join(project, ".env.example"), None, always=True)
+
     env_path = posixpath.join(project, ".env")
-    created_env = _remote_size(sftp, env_path) is None
+    env_size = _remote_size(sftp, env_path)
+    created_env = env_size is None
+    missing_keys: list[str] = []
     if created_env:
         _put_bytes(sftp, env_text, env_path, 0o600)  # it may hold HF_TOKEN
-        files.append(env_path)
+        checks.append({"name": ".env", "path": env_path, "status": "added"})
+    else:
+        have = set(_ENV_KEY.findall(_read_remote(sftp, env_path, env_size).decode(errors="replace")))
+        missing_keys = [k for k in dict.fromkeys(_ENV_KEY.findall(env_text.decode())) if k not in have]
+        checks.append({"name": ".env", "path": env_path, "status": "kept"})
+
     return {
         "remote_dir": project,
         "dataset_dir": datasets,
-        "files": files,
+        "files": [c["path"] for c in checks if c["status"] in ("added", "updated")],
+        "checks": checks,
         "created_env": created_env,
         "env_path": env_path,
+        "env_missing_keys": missing_keys,
+        "train_jobs": list(TRAINING_JOBS),
         "serve_command": f"sbatch {shlex.quote(posixpath.join(slurm_dir, 'serve_policy.sbatch'))}",
     }
 
@@ -466,7 +515,8 @@ def handle_install_policy_server(name: str, request: InstallPolicyServerRequest)
 
 
 def handle_install_training_kit(name: str, request: TrainingKitRequest) -> dict[str, Any]:
-    """Send the Slurm training kit (lelab/slurm/ and the policy server) to the server's project folder."""
+    """Check the Slurm training kit (lelab/slurm/ and the policy server) in the server's project folder and
+    copy what is missing or out of date."""
     if config.get_remote_server(name) is None:
         raise remote_ssh.RemoteServerError(f"No saved server named {name!r}", 404)
     with remote_ssh.lease(name) as session:

@@ -208,8 +208,9 @@ const SendToServerDialog: React.FC<Props> = ({ open, onOpenChange, datasetRepoId
                   Also send the Slurm training files to{" "}
                   <code className="text-xs text-gray-200">{selected.remote_work_dir || "the home folder"}</code>
                   <span className="block text-xs text-gray-500">
-                    .env.example (env, dataset, output and policy folders), jobs to train ACT and SmolVLA (full and
-                    LoRA) and to serve a policy. Your .env is never overwritten.
+                    .env.example (env, dataset, output and policy folders), jobs to train ACT, SmolVLA and pi0.5
+                    (full and LoRA) and to serve a policy. Only missing or changed files are copied; your .env is
+                    never overwritten.
                   </span>
                 </span>
               </label>

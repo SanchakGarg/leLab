@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Trains one LeRobot policy on a dataset LeLab sent to this server. Sourced by slurm/train_*.sbatch, which set
-#   POLICY_KIND = act | smolvla
+#   POLICY_KIND = act | smolvla | pi05
 #   FINETUNE    = full | lora
 # Every setting comes from .env (see .env.example); a variable on the sbatch command line wins over it.
 #
@@ -11,7 +11,7 @@
 # shellcheck source=lelab_common.sh
 source "$PROJECT_DIR/slurm/lelab_common.sh"
 
-case $POLICY_KIND in act | smolvla) ;; *) die "POLICY_KIND must be act or smolvla, got '$POLICY_KIND'" ;; esac
+case $POLICY_KIND in act | smolvla | pi05) ;; *) die "POLICY_KIND must be act, smolvla or pi05, got '$POLICY_KIND'" ;; esac
 case $FINETUNE in full | lora) ;; *) die "FINETUNE must be full or lora, got '$FINETUNE'" ;; esac
 
 # ---- dataset ----------------------------------------------------------------------------------------------------------
@@ -46,6 +46,83 @@ fi
 ARGS=()
 add() { ARGS+=("$@"); }
 
+# ---- helpers ----------------------------------------------------------------------------------------------------------
+# Adds --rename_map from the dataset's cameras onto a pretrained model's camera names.
+#   $1 the model's camera names, in order (comma separated)   $2 the variable that orders the dataset's cameras
+#   $3 the variable that replaces the mapping (JSON, or none) $4 the model, for messages
+#   $5 optional: cameras with this word in their name go after the others (wrist cameras after the scene camera)
+camera_rename_map() {
+    local targets=$1 order_var=$2 map_var=$3 model=$4 last_word=${5:-} rename
+    if [ "${!map_var:-}" = none ]; then
+        rename=
+    elif [ -n "${!map_var:-}" ]; then
+        rename=${!map_var}
+    else
+        rename=$("$PY" - "$DATA/meta/info.json" "$targets" "${!order_var:-}" "$order_var" "$model" "$last_word" <<'PYEOF'
+import json, sys
+info, targets, order, order_var, model, last_word = sys.argv[1:]
+features = json.load(open(info))["features"]
+targets = targets.split(",")
+cams = [k for k in features if k.startswith("observation.images.")]
+order = [c.strip() for c in order.split(",") if c.strip()]
+if order:
+    want = [c if c.startswith("observation.images.") else "observation.images." + c for c in order]
+    missing = [w for w in want if w not in cams]
+    if missing:
+        sys.exit(f"{order_var} names cameras the dataset doesn't have: {missing}; it has {cams}")
+    cams = want
+elif last_word:
+    cams.sort(key=lambda c: last_word in c.lower())
+if len(cams) > len(targets):
+    print(f"WARNING: {model} takes {len(targets)} cameras; using {cams[:len(targets)]} (pick them with {order_var})",
+          file=sys.stderr)
+print(json.dumps({c: f"observation.images.{t}" for c, t in zip(cams, targets)}))
+PYEOF
+        )
+    fi
+    if [ -n "$rename" ]; then
+        add --rename_map="$rename"
+        echo "=== cameras: $rename ==="
+    fi
+}
+
+# pi0.5 normalizes state and actions by their 1st/99th percentiles. LeRobot >= 0.7 records them; for an older
+# dataset, compute them from its data files and add them to meta/stats.json (the old file is kept as stats.json.orig).
+ensure_quantile_stats() {
+    "$PY" - "$DATA" <<'PYEOF' || die "could not add the q01/q99 statistics pi0.5 needs to $DATA/meta/stats.json"
+import json, shutil, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+stats_path = root / "meta" / "stats.json"
+stats = json.loads(stats_path.read_text())
+keys = [k for k in ("action", "observation.state") if k in stats]
+need = [k for k in keys if not {"q01", "q99"} <= stats[k].keys()]
+if not need:
+    sys.exit(0)
+import numpy as np
+import pyarrow.parquet as pq
+
+print(f"=== {stats_path} has no q01/q99 for {need}: computing them from the data files ===")
+columns = {k: [] for k in need}
+for f in sorted((root / "data").rglob("*.parquet")):
+    table = pq.read_table(f, columns=need)
+    for k in need:
+        columns[k].append(np.asarray(table.column(k).to_pylist(), dtype=np.float64))
+for k in need:
+    values = np.concatenate(columns[k])
+    for q in (1, 10, 50, 90, 99):
+        stats[k][f"q{q:02d}"] = np.quantile(values, q / 100, axis=0).tolist()
+backup = stats_path.with_name("stats.json.orig")
+if not backup.exists():
+    shutil.copy2(stats_path, backup)
+tmp = stats_path.with_name("stats.json.tmp")
+tmp.write_text(json.dumps(stats, indent=4))
+tmp.replace(stats_path)
+PYEOF
+}
+
+
 # ---- per policy -------------------------------------------------------------------------------------------------------
 if [ "$POLICY_KIND" = act ]; then
     STEPS=${ACT_STEPS:-100000}
@@ -74,7 +151,7 @@ if [ "$POLICY_KIND" = act ]; then
         add --peft.target_modules="$TARGETS" --peft.full_training_modules="${ACT_LORA_FULL_MODULES:-[action_head]}"
         DESC="ACT LoRA r${ACT_LORA_R:-16} on $ACT_INIT"
     fi
-else
+elif [ "$POLICY_KIND" = smolvla ]; then
     STEPS=${SMOLVLA_STEPS:-30000}
     BATCH=${SMOLVLA_BATCH:-32}
     BASE=${SMOLVLA_BASE:-lerobot/smolvla_base}
@@ -97,32 +174,32 @@ else
         DESC="SmolVLA LoRA r${SMOLVLA_LORA_R:-64} on ${SMOLVLA_LORA_TARGET:-expert} from $BASE"
     fi
     # smolvla_base was trained on cameras named camera1, camera2, camera3: map the dataset's cameras onto them.
-    if [ "${SMOLVLA_RENAME_MAP:-}" = none ]; then
-        RENAME=
-    elif [ -n "${SMOLVLA_RENAME_MAP:-}" ]; then
-        RENAME=$SMOLVLA_RENAME_MAP
+    camera_rename_map camera1,camera2,camera3 SMOLVLA_CAMERAS SMOLVLA_RENAME_MAP smolvla_base
+elif [ "$POLICY_KIND" = pi05 ]; then
+    STEPS=${PI05_STEPS:-30000}
+    BATCH=${PI05_BATCH:-8}
+    BASE=${PI05_BASE:-lerobot/pi05_base}
+    # bfloat16 weights and gradient checkpointing: what lets a 3B model train on a ~23 GB GPU slice.
+    add --policy.path="$BASE" --policy.scheduler_decay_steps="$STEPS"
+    add --policy.dtype="${PI05_DTYPE:-bfloat16}" --policy.gradient_checkpointing="${PI05_GRADIENT_CHECKPOINTING:-true}"
+    if [ -n "${PI05_CHUNK:-}" ]; then add --policy.chunk_size="$PI05_CHUNK"; fi
+    if [ -n "${PI05_N_ACTION_STEPS:-}" ]; then add --policy.n_action_steps="$PI05_N_ACTION_STEPS"; fi
+    if [ "$FINETUNE" = full ]; then
+        FREEZE=${PI05_FREEZE_VISION:-true}
+        EXPERT_ONLY=${PI05_EXPERT_ONLY:-true}
+        add --policy.optimizer_lr="${PI05_LR:-2.5e-5}" --policy.scheduler_decay_lr="${PI05_DECAY_LR:-2.5e-6}"
+        add --policy.freeze_vision_encoder="$FREEZE" --policy.train_expert_only="$EXPERT_ONLY"
+        DESC="pi0.5 fine-tune from $BASE (freeze vision $FREEZE, expert only $EXPERT_ONLY)"
     else
-        RENAME=$("$PY" - "$DATA/meta/info.json" "${SMOLVLA_CAMERAS:-}" <<'PYEOF'
-import json, sys
-features = json.load(open(sys.argv[1]))["features"]
-cams = [k for k in features if k.startswith("observation.images.")]
-order = [c.strip() for c in sys.argv[2].split(",") if c.strip()]
-if order:
-    want = [c if c.startswith("observation.images.") else "observation.images." + c for c in order]
-    missing = [w for w in want if w not in cams]
-    if missing:
-        sys.exit(f"SMOLVLA_CAMERAS names cameras the dataset doesn't have: {missing}; it has {cams}")
-    cams = want
-if len(cams) > 3:
-    print(f"WARNING: smolvla_base takes 3 cameras; using {cams[:3]} (pick them with SMOLVLA_CAMERAS)", file=sys.stderr)
-print(json.dumps({c: f"observation.images.camera{i + 1}" for i, c in enumerate(cams[:3])}))
-PYEOF
-        )
+        # LeRobot's default targets: the action expert's q/v and the action/time projections.
+        add --policy.optimizer_lr="${PI05_LORA_LR:-1e-4}" --policy.scheduler_decay_lr="${PI05_LORA_DECAY_LR:-1e-5}"
+        add --peft.method_type=LORA --peft.r="${PI05_LORA_R:-32}" --peft.lora_alpha="${PI05_LORA_ALPHA:-32}"
+        DESC="pi0.5 LoRA r${PI05_LORA_R:-32} from $BASE"
     fi
-    if [ -n "$RENAME" ]; then
-        add --rename_map="$RENAME"
-        echo "=== cameras: $RENAME ==="
-    fi
+    # pi05_base was trained on a third-person camera (base_0_rgb) and up to two wrist cameras. Without
+    # PI05_CAMERAS, a camera with "wrist" in its name goes to a wrist slot and the others come first.
+    camera_rename_map base_0_rgb,left_wrist_0_rgb,right_wrist_0_rgb PI05_CAMERAS PI05_RENAME_MAP pi05_base wrist
+    ensure_quantile_stats
 fi
 
 if [ "$AUGMENT" = 1 ]; then add --dataset.image_transforms.enable=true; fi

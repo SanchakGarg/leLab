@@ -28,6 +28,7 @@ import {
   installPolicyServer,
   installTrainingKit,
   saveRemoteServer,
+  TrainingKitCheck,
   TrainingKitResult,
 } from "@/lib/remoteApi";
 import ServerConnectForm from "./ServerConnectForm";
@@ -321,26 +322,13 @@ const RemoteServerDialog: React.FC<Props> = ({ open, onOpenChange }) => {
                   className="border-gray-700 bg-gray-950 text-xs text-gray-300 hover:bg-gray-900"
                 >
                   {kit.busy ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <FileCog className="mr-1.5 h-3.5 w-3.5" />}
-                  Send Slurm training files to the work folder
+                  Check Slurm training files on the server
                 </Button>
-                {kit.result ? (
-                  <div className="space-y-1 text-xs text-gray-400">
-                    <p>
-                      Sent .env.example, slurm/ (train_act, train_act_lora, train_smolvla_full, train_smolvla_lora,
-                      serve_policy) and the policy server to{" "}
-                      <code className="break-all text-gray-200">{kit.result.remote_dir}</code>.
-                    </p>
-                    <p>
-                      {kit.result.created_env
-                        ? `Created ${kit.result.env_path}: set LELAB_ENV_DIR, DATASET and the folders there.`
-                        : `Your ${kit.result.env_path} was kept; compare it with .env.example for new options.`}
-                    </p>
-                    <p>Serve a trained policy (POLICY in .env):</p>
-                    <code className="block break-all rounded bg-black/50 px-2 py-1.5 text-gray-200">
-                      {kit.result.serve_command}
-                    </code>
-                  </div>
-                ) : null}
+                <p className="text-xs text-gray-500">
+                  Compares each file in the work folder with this LeLab's and copies the missing or changed ones.
+                  .env.example is always rewritten; your .env is never touched.
+                </p>
+                {kit.result ? <TrainingKitSummary result={kit.result} /> : null}
                 {kit.error ? <p className="text-xs text-red-300">{kit.error}</p> : null}
               </div>
             ) : null}
@@ -348,6 +336,50 @@ const RemoteServerDialog: React.FC<Props> = ({ open, onOpenChange }) => {
         ) : null}
       </DialogContent>
     </Dialog>
+  );
+};
+
+const STATUS_TEXT: Record<TrainingKitCheck["status"], { label: string; className: string }> = {
+  added: { label: "copied (was missing)", className: "text-emerald-300" },
+  updated: { label: "updated (was different)", className: "text-sky-300" },
+  up_to_date: { label: "up to date", className: "text-gray-500" },
+  kept: { label: "kept (yours)", className: "text-gray-500" },
+};
+
+/** The result of a training kit check: what was copied, and what the user's .env lacks. */
+const TrainingKitSummary: React.FC<{ result: TrainingKitResult }> = ({ result }) => {
+  const checks = result.checks ?? [];
+  const copied = checks.filter((c) => c.status === "added" || c.status === "updated").length;
+  const missingKeys = result.env_missing_keys ?? [];
+  return (
+    <div className="space-y-1.5 text-xs text-gray-400">
+      <p>
+        {copied === 0
+          ? "Every file was already up to date in "
+          : `Copied ${copied} of ${checks.length} files to `}
+        <code className="break-all text-gray-200">{result.remote_dir}</code>
+        {copied === 0 ? " (.env.example rewritten)." : "."}
+      </p>
+      {checks.length ? (
+        <ul className="space-y-0.5 rounded bg-black/40 px-2 py-1.5" aria-label="Slurm training files">
+          {checks.map((c) => (
+            <li key={c.path} className="flex justify-between gap-3">
+              <code className="break-all text-gray-300">{c.name}</code>
+              <span className={`shrink-0 ${STATUS_TEXT[c.status].className}`}>{STATUS_TEXT[c.status].label}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <p>
+        {result.created_env
+          ? `Created ${result.env_path}: set LELAB_ENV_DIR, DATASET and the folders there.`
+          : missingKeys.length
+            ? `Your ${result.env_path} was kept. It doesn't set ${missingKeys.length} newer options, which use their defaults: ${missingKeys.join(", ")}. Copy them from .env.example to change them.`
+            : `Your ${result.env_path} was kept and has every option in .env.example.`}
+      </p>
+      <p>Serve a trained policy (POLICY in .env):</p>
+      <code className="block break-all rounded bg-black/50 px-2 py-1.5 text-gray-200">{result.serve_command}</code>
+    </div>
   );
 };
 

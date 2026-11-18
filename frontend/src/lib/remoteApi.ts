@@ -101,14 +101,29 @@ export async function installPolicyServer(
   });
 }
 
-/** What sending the Slurm training kit (.env.example, slurm/*.sbatch, the policy server) put on the server. */
+/** One file of the Slurm training kit, as the check found it on the server. */
+export interface TrainingKitCheck {
+  /** Relative to the project folder, e.g. "slurm/train_pi05_lora.sbatch". */
+  name: string;
+  path: string;
+  /** added: was missing; updated: was different; up_to_date: already matched; kept: the user's .env. */
+  status: "added" | "updated" | "up_to_date" | "kept";
+}
+
+/** What checking the Slurm training kit (.env.example, slurm/*.sbatch, the policy server) did on the server. */
 export interface TrainingKitResult {
   remote_dir: string;
   dataset_dir: string;
+  /** The files that were copied (missing or different). */
   files: string[];
+  checks?: TrainingKitCheck[];
   /** .env was missing and was created from .env.example (an existing .env is never touched). */
   created_env: boolean;
   env_path: string;
+  /** Settings in .env.example that the existing .env doesn't set (their defaults apply). */
+  env_missing_keys?: string[];
+  /** The slurm/train_*.sbatch jobs. */
+  train_jobs?: string[];
   serve_command: string;
 }
 
@@ -121,7 +136,7 @@ export async function installTrainingKit(
   return apiRequest(baseUrl, fetcher, `/remote-servers/${enc(name)}/install-training-kit`, {
     method: "POST",
     body,
-    action: "Send the Slurm training files",
+    action: "Check the Slurm training files",
   });
 }
 

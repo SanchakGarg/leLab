@@ -54,6 +54,10 @@ class FakeSftp:
         self.puts.append(remote)
         self._p(remote).write_bytes(fl.read())
 
+    def open(self, path: str, mode: str = "r"):
+        assert mode == "rb", mode
+        return open(self._p(path), "rb")
+
     def chmod(self, path: str, mode: int) -> None:
         self._p(path).chmod(mode)
 
@@ -354,6 +358,63 @@ def test_training_kit_never_overwrites_the_users_env(sftp: FakeSftp) -> None:
     assert again["created_env"] is False
     assert env.read_text() == "DATASET=mine\n"
     assert "DATASET_DIR=/scratch/data" in sftp._p(f"{HOME}/.env.example").read_text()
+
+
+def test_training_kit_copies_only_missing_or_changed_files(sftp: FakeSftp) -> None:
+    from lelab import remote_upload
+
+    first = remote_upload.install_training_kit(sftp, {})
+    statuses = {c["name"]: c["status"] for c in first["checks"]}
+    assert set(statuses.values()) == {"added"}
+    assert {
+        "slurm/train_pi05_full.sbatch",
+        "slurm/train_pi05_lora.sbatch",
+        ".env.example",
+        ".env",
+    } <= statuses.keys()
+
+    slurm = sftp._p(f"{HOME}/slurm")
+    (slurm / "train_act.sbatch").write_text("an old version")
+    (slurm / "train_pi05_lora.sbatch").unlink()
+    (slurm / "lelab_train.sh").chmod(0o644)
+    sftp.puts.clear()
+
+    again = remote_upload.install_training_kit(sftp, {})
+
+    statuses = {c["name"]: c["status"] for c in again["checks"]}
+    assert statuses["slurm/train_act.sbatch"] == "updated"
+    assert statuses["slurm/train_pi05_lora.sbatch"] == "added"
+    assert statuses["slurm/lelab_train.sh"] == "up_to_date"
+    assert os.access(slurm / "lelab_train.sh", os.X_OK)  # its mode was fixed in place
+    assert statuses[".env"] == "kept"
+    assert "#!/bin/bash" in (slurm / "train_act.sbatch").read_text()
+    # Only the two changed files and .env.example (always rewritten) were sent.
+    assert sorted(p.rsplit("/", 1)[1] for p in sftp.puts) == [
+        ".env.example.part",
+        "train_act.sbatch.part",
+        "train_pi05_lora.sbatch.part",
+    ]
+    assert sorted(again["files"]) == [
+        f"{HOME}/slurm/train_act.sbatch",
+        f"{HOME}/slurm/train_pi05_lora.sbatch",
+    ]
+
+
+def test_training_kit_lists_the_settings_an_existing_env_lacks(sftp: FakeSftp) -> None:
+    from lelab import remote_upload
+
+    kit = remote_upload.install_training_kit(sftp, {})
+    assert kit["env_missing_keys"] == []
+    env = sftp._p(kit["env_path"])
+    env.write_text(
+        "".join(line + "\n" for line in env.read_text().splitlines() if not line.startswith("PI05_"))
+    )
+
+    again = remote_upload.install_training_kit(sftp, {})
+
+    assert again["env_missing_keys"][:2] == ["PI05_BASE", "PI05_STEPS"]
+    assert all(k.startswith("PI05_") for k in again["env_missing_keys"])
+    assert "PI05_BASE=" not in env.read_text()  # still the user's file
 
 
 def test_upload_can_send_the_training_kit(dataset: Path, sftp: FakeSftp, connected: SimpleNamespace) -> None:

@@ -12,12 +12,15 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 import lerobot.scripts.lerobot_train  # noqa: F401  registers the policy configs, as the CLI does
 from lelab import remote_upload
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
+from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.policies.act.configuration_act import ACTConfig
+from lerobot.policies.pi05.configuration_pi05 import PI05Config
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
@@ -53,6 +56,7 @@ def project(tmp_path: Path) -> Path:
     meta.mkdir(parents=True)
     features = {"observation.images.front": {}, "observation.images.wrist": {}, "observation.state": {}}
     (meta / "info.json").write_text(json.dumps({"features": features}))
+    _write_frames(data / "pick_cube")
 
     bin_dir = proj / "venv" / "bin"
     bin_dir.mkdir(parents=True)
@@ -66,7 +70,32 @@ def project(tmp_path: Path) -> Path:
 
     SmolVLAConfig().save_pretrained(tmp_path / "smolvla_base")
     ACTConfig().save_pretrained(tmp_path / "act_init")
+    # pi05_base's cameras and padded state, as on the Hub.
+    image = PolicyFeature(type=FeatureType.VISUAL, shape=(3, 224, 224))
+    cams = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
+    PI05Config(
+        input_features={
+            **{f"observation.images.{c}": image for c in cams},
+            "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(32,)),
+        },
+        output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(32,))},
+    ).save_pretrained(tmp_path / "pi05_base")
     return proj
+
+
+def _write_frames(dataset: Path) -> None:
+    """data/ with 100 frames of 6 joints, and stats.json without quantiles (a dataset from before LeRobot 0.7)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    rows = [[float(i + j) for j in range(6)] for i in range(100)]
+    (dataset / "data" / "chunk-000").mkdir(parents=True)
+    pq.write_table(
+        pa.table({"action": rows, "observation.state": rows, "index": list(range(100))}),
+        dataset / "data" / "chunk-000" / "file-000.parquet",
+    )
+    stats = {k: {"mean": [0.0] * 6, "std": [1.0] * 6} for k in ("action", "observation.state")}
+    (dataset / "meta" / "stats.json").write_text(json.dumps(stats))
 
 
 def _run(project: Path, script: str, cwd: Path | None = None, **env: str) -> subprocess.CompletedProcess:
@@ -89,6 +118,8 @@ def _run(project: Path, script: str, cwd: Path | None = None, **env: str) -> sub
         ("train_act_lora.sbatch", "act", True),
         ("train_smolvla_full.sbatch", "smolvla", False),
         ("train_smolvla_lora.sbatch", "smolvla", True),
+        ("train_pi05_full.sbatch", "pi05", False),
+        ("train_pi05_lora.sbatch", "pi05", True),
     ],
 )
 def test_training_jobs_build_argv_lerobot_accepts(
@@ -100,6 +131,7 @@ def test_training_jobs_build_argv_lerobot_accepts(
         script,
         DATASET="pick_cube",
         SMOLVLA_BASE=str(tmp / "smolvla_base"),
+        PI05_BASE=str(tmp / "pi05_base"),
         ACT_INIT=str(tmp / "act_init") if lora else "",
     )
     assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-3000:]
@@ -124,6 +156,70 @@ def test_training_jobs_build_argv_lerobot_accepts(
             "observation.images.front": "observation.images.camera1",
             "observation.images.wrist": "observation.images.camera2",
         }
+    if policy_type == "pi05":
+        assert cfg.rename_map == {
+            "observation.images.front": "observation.images.base_0_rgb",
+            "observation.images.wrist": "observation.images.left_wrist_0_rgb",
+        }
+        assert cfg.policy.dtype == torch.bfloat16 and cfg.policy.gradient_checkpointing
+        assert cfg.policy.train_expert_only == (not lora) and cfg.policy.scheduler_decay_steps == 30000
+
+
+def test_pi05_puts_the_wrist_camera_in_a_wrist_slot_and_honours_pi05_cameras(project: Path) -> None:
+    info = project.parent / "data" / "pick_cube" / "meta" / "info.json"
+    features = {"observation.images.wrist": {}, "observation.images.top": {}, "observation.state": {}}
+    info.write_text(json.dumps({"features": features}))
+    tmp = project.parent
+
+    result = _run(project, "train_pi05_lora.sbatch", DATASET="pick_cube", PI05_BASE=str(tmp / "pi05_base"))
+    assert result.returncode == 0, result.stderr
+    argv = json.loads((project / "argv.json").read_text())
+    rename = json.loads(next(a for a in argv if a.startswith("--rename_map=")).split("=", 1)[1])
+    assert rename == {
+        "observation.images.top": "observation.images.base_0_rgb",
+        "observation.images.wrist": "observation.images.left_wrist_0_rgb",
+    }
+
+    shutil.rmtree(project / "outputs")
+    result = _run(
+        project,
+        "train_pi05_lora.sbatch",
+        DATASET="pick_cube",
+        PI05_BASE=str(tmp / "pi05_base"),
+        PI05_CAMERAS="nope",
+    )
+    assert result.returncode == 1 and "PI05_CAMERAS names cameras" in result.stderr
+
+
+def test_pi05_adds_the_quantile_stats_an_older_dataset_lacks(project: Path) -> None:
+    meta = project.parent / "data" / "pick_cube" / "meta"
+    original = (meta / "stats.json").read_text()
+
+    result = _run(
+        project, "train_pi05_lora.sbatch", DATASET="pick_cube", PI05_BASE=str(project.parent / "pi05_base")
+    )
+
+    assert result.returncode == 0, result.stderr
+    stats = json.loads((meta / "stats.json").read_text())
+    for key in ("action", "observation.state"):
+        assert stats[key]["q01"][0] == pytest.approx(0.99) and stats[key]["q99"][5] == pytest.approx(103.01)
+        assert stats[key]["mean"] == [0.0] * 6  # the other stats are kept
+    assert (meta / "stats.json.orig").read_text() == original
+
+    # A dataset that has them is left alone.
+    (meta / "stats.json").write_text(json.dumps(stats))
+    before = (meta / "stats.json").stat().st_mtime_ns
+    shutil.rmtree(project / "outputs")
+    assert (
+        _run(
+            project,
+            "train_pi05_lora.sbatch",
+            DATASET="pick_cube",
+            PI05_BASE=str(project.parent / "pi05_base"),
+        ).returncode
+        == 0
+    )
+    assert (meta / "stats.json").stat().st_mtime_ns == before
 
 
 def test_a_second_submit_resumes(project: Path) -> None:

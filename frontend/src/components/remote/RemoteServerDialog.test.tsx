@@ -87,3 +87,58 @@ test("a saved profile never carries the password; connecting sends it and confir
   // The password went only to /connect.
   expect(calls.filter((c) => JSON.stringify(c.body ?? {}).includes("hunter2")).every((c) => c.path.endsWith("/connect"))).toBe(true);
 });
+
+test("checking the Slurm files lists what was copied and the settings the user's .env lacks", async () => {
+  servers = [
+    {
+      name: "cluster",
+      host: "10.2.100.14",
+      username: "student",
+      port: 22,
+      auth: "password",
+      remote_dataset_dir: "data",
+      remote_work_dir: "projects/lelab",
+      session: { connected: true },
+    },
+  ];
+  const fetchServers = mocks.fetcher.getMockImplementation()!;
+  mocks.fetcher.mockImplementation(async (url: string, init: RequestInit = {}) => {
+    if (url.endsWith("/install-training-kit")) {
+      calls.push({ method: "POST", path: url.replace("http://test", ""), body: JSON.parse(String(init.body)) });
+      const dir = "/home/student/projects/lelab";
+      return json({
+        remote_dir: dir,
+        dataset_dir: "/home/student/data",
+        files: [`${dir}/slurm/train_pi05_lora.sbatch`],
+        checks: [
+          { name: "slurm/train_act.sbatch", path: `${dir}/slurm/train_act.sbatch`, status: "up_to_date" },
+          { name: "slurm/train_pi05_lora.sbatch", path: `${dir}/slurm/train_pi05_lora.sbatch`, status: "added" },
+          { name: ".env.example", path: `${dir}/.env.example`, status: "updated" },
+          { name: ".env", path: `${dir}/.env`, status: "kept" },
+        ],
+        created_env: false,
+        env_path: `${dir}/.env`,
+        env_missing_keys: ["PI05_BASE", "PI05_BATCH"],
+        serve_command: `sbatch ${dir}/slurm/serve_policy.sbatch`,
+      });
+    }
+    return fetchServers(url, init);
+  });
+  await render();
+  const picker = container.querySelector("select")!;
+  await act(async () => {
+    picker.value = "cluster";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  await click(button(container, "Check Slurm training files on the server"));
+
+  const post = calls.find((c) => c.path === "/remote-servers/cluster/install-training-kit")!;
+  expect(post.body).toEqual({ remote_dir: "projects/lelab", dataset_dir: "data" });
+  const list = container.querySelector('[aria-label="Slurm training files"]')!;
+  expect(list.textContent).toContain("slurm/train_pi05_lora.sbatchcopied (was missing)");
+  expect(list.textContent).toContain("slurm/train_act.sbatchup to date");
+  expect(list.textContent).toContain(".env.exampleupdated (was different)");
+  expect(container.textContent).toContain("Copied 2 of 4 files");
+  expect(container.textContent).toContain("PI05_BASE, PI05_BATCH");
+});
