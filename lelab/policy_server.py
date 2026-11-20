@@ -70,7 +70,7 @@ import numpy as np
 
 # The version of LeLab's server-side files (this script and the Slurm kit). Bump it whenever any of them changes:
 # `python lelab_policy_server.py --version` and the `# lelab-kit-version:` line in slurm/* show what a server has.
-LELAB_KIT_VERSION = "2026.11.18-4"
+LELAB_KIT_VERSION = "2026.11.20-1"
 PROTOCOL = 1
 DEFAULT_PORT = 5555
 FPS = 30
@@ -188,6 +188,27 @@ def image_shapes(input_features: Mapping[str, Any], cameras: Mapping[str, str]) 
     return shapes
 
 
+def feature_dim(key: str, features: Mapping[str, Any], processors: Iterable[Any] = ()) -> int:
+    """How many values `key` (observation.state, action) has on the robot side; 0 if the policy has none.
+
+    The saved normalisation stats come from the dataset, so they know. The config's feature shape may not: a
+    policy fine-tuned from a base (pi05_base) keeps the base's padded state feature, (32,) for a 6-joint arm.
+    """
+    for processor in processors:
+        for step in getattr(processor, "steps", None) or ():
+            stats = getattr(step, "stats", None)
+            if not isinstance(stats, Mapping) or not isinstance(stats.get(key), Mapping):
+                continue
+            for value in stats[key].values():
+                shape = getattr(value, "shape", None)
+                shape = tuple(shape) if shape is not None else np.shape(value)
+                if shape:
+                    return int(shape[-1])
+    feature = features.get(key)
+    shape = tuple(getattr(feature, "shape", ()) or ()) if feature is not None else ()
+    return int(shape[0]) if shape else 0
+
+
 def pick_device(name: str = "auto") -> str:
     import torch
 
@@ -238,10 +259,8 @@ class PolicyAgent:
         self.camera_keys = camera_features(features, rename_maps)
         self.cameras = tuple(self.camera_keys)
         self.image_shapes = image_shapes(features, self.camera_keys)
-        state = features.get("observation.state")
-        self.state_dim = int(state.shape[0]) if state is not None else 0
-        action = (getattr(cfg, "output_features", {}) or {}).get("action")
-        self.action_dim = int(action.shape[0]) if action is not None else 0
+        self.state_dim = feature_dim("observation.state", features, (self.pre,))
+        self.action_dim = feature_dim("action", getattr(cfg, "output_features", {}) or {}, (self.post,))
         self.n_action_steps = int(getattr(cfg, "n_action_steps", 0) or 1)
         self.chunk_size = int(getattr(cfg, "chunk_size", 0) or self.n_action_steps)
         self.name = f"{cfg.type} ({path})"

@@ -296,3 +296,17 @@ def test_the_server_exits_when_lelab_dies_too() -> None:
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_feature_dim_prefers_the_dataset_stats_over_a_padded_base_feature() -> None:
+    """A pi05_base fine-tune keeps the base's (32,) state feature; its normaliser knows the arm has 6."""
+    from lelab.policy_server import feature_dim
+
+    features = {"observation.state": SimpleNamespace(shape=(32,)), "action": SimpleNamespace(shape=(6,))}
+    normaliser = SimpleNamespace(stats={"observation.state": {"q01": np.zeros(6), "q99": [1.0] * 6}})
+    pre = SimpleNamespace(steps=[SimpleNamespace(), SimpleNamespace(stats={}), normaliser])
+    assert feature_dim("observation.state", features, (pre,)) == 6
+    # Without stats for the key, the config's shape stands; a key the policy lacks is 0.
+    assert feature_dim("observation.state", features) == 32
+    assert feature_dim("action", features, (pre,)) == 6
+    assert feature_dim("observation.environment_state", features, (pre,)) == 0
